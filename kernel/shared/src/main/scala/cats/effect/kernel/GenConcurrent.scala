@@ -146,7 +146,8 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
           F.uncancelable { _ =>
             sem.acquire >> f(a).guarantee(sem.release).start map { fiber =>
               supervision.update(_ + fiber) *>
-                fiber.joinWithNever
+                fiber
+                  .joinWithNever
                   .onCancel(fiber.cancel)
                   .guarantee(supervision.update(_ - fiber))
             }
@@ -173,21 +174,47 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
     implicit val F: GenConcurrent[F, E] = this
 
     // TODO we need to write a test for error cancelation
-    F.ref[List[Fiber[F, ?, ?]]](Nil) flatMap { supervision =>
-      MiniSemaphore[F](n) flatMap { sem =>
-        // TODO this seems promising. we just need to sequence the errors/self-cancelation later
-        val startAll = ta traverse_ { a =>
-          F.uncancelable { _ =>
-            sem.acquire >> f(a).guarantee(sem.release).start flatMap { fiber =>
-              // supervision is handled very differently here: we never remove from the set
-              supervision.update(fiber :: _)
+    F.deferred[Option[E]] flatMap { preempt =>
+      F.ref[List[Fiber[F, ?, ?]]](Nil) flatMap { supervision =>
+        MiniSemaphore[F](n) flatMap { sem =>
+          val startAll = ta traverse_ { a =>
+            // first check to see if any of the effects have errored out
+            // don't bother starting new things if that happens
+            preempt.tryGet flatMap {
+              case Some(_) =>
+                F.unit // allow the error to be resurfaced later
+
+              case None =>
+                F.uncancelable { _ =>
+                  // if the effect produces an error, race to kill all the rest
+                  val wrapped = f(a) guaranteeCase { oc =>
+                    sem.release *> oc.fold(
+                      preempt.complete(None).void,
+                      e => preempt.complete(Some(e)).void,
+                      _ => F.unit)
+                  }
+
+                  sem.acquire >> wrapped.start flatMap { fiber =>
+                    // supervision is handled very differently here: we never remove from the set
+                    supervision.update(fiber :: _)
+                  }
+                }
             }
           }
-        }
 
-        // we block until it's all done by acquiring all the permits
-        startAll.onCancel(supervision.get.flatMap(_.parTraverse_(_.cancel))) *>
-          sem.acquire.replicateA_(n)
+          val cancelAll = supervision.get.flatMap(_.parTraverse_(_.cancel))
+
+          startAll.onCancel(cancelAll) *>
+            // we block until it's all done by acquiring all the permits
+            F.race(preempt.get *> cancelAll, sem.acquire.replicateA_(n)) *>
+            // if we hit an error or self-cancelation in any effect, resurface it here
+            // note that we can't lose errors here because of the permits: we know the fibers are done
+            preempt.tryGet flatMap {
+              case Some(Some(e)) => F.raiseError(e)
+              case Some(None) => F.canceled
+              case None => F.unit
+            }
+        }
       }
     }
   }
