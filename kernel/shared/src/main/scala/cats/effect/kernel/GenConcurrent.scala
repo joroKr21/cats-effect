@@ -139,7 +139,27 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
 
     implicit val F: GenConcurrent[F, E] = this
 
-    MiniSemaphore[F](n).flatMap { sem => ta.parTraverse { a => sem.withPermit(f(a)) } }
+    // TODO we need to write a test for error cancelation
+    F.ref[Set[Fiber[F, ?, ?]]](Set()) flatMap { supervision =>
+      MiniSemaphore[F](n) flatMap { sem =>
+        val results = ta traverse { a =>
+          F.uncancelable { _ =>
+            sem.acquire >> f(a).guarantee(sem.release).start map { fiber =>
+              supervision.update(_ + fiber) *>
+                fiber.joinWithNever
+                  .onCancel(fiber.cancel)
+                  .guarantee(supervision.update(_ - fiber))
+            }
+          }
+        }
+
+        results.flatMap(_.sequence) guaranteeCase {
+          case Outcome.Succeeded(_) => F.unit
+          // has to be done in parallel to avoid head of line issues
+          case _ => supervision.get.flatMap(_.toList.parTraverse_(_.cancel))
+        }
+      }
+    }
   }
 
   /**
@@ -152,7 +172,24 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
 
     implicit val F: GenConcurrent[F, E] = this
 
-    MiniSemaphore[F](n).flatMap { sem => ta.parTraverse_ { a => sem.withPermit(f(a)) } }
+    // TODO we need to write a test for error cancelation
+    F.ref[List[Fiber[F, ?, ?]]](Nil) flatMap { supervision =>
+      MiniSemaphore[F](n) flatMap { sem =>
+        // TODO this seems promising. we just need to sequence the errors/self-cancelation later
+        val startAll = ta traverse_ { a =>
+          F.uncancelable { _ =>
+            sem.acquire >> f(a).guarantee(sem.release).start flatMap { fiber =>
+              // supervision is handled very differently here: we never remove from the set
+              supervision.update(fiber :: _)
+            }
+          }
+        }
+
+        // we block until it's all done by acquiring all the permits
+        startAll.onCancel(supervision.get.flatMap(_.parTraverse_(_.cancel))) *>
+          sem.acquire.replicateA_(n)
+      }
+    }
   }
 
   override def racePair[A, B](fa: F[A], fb: F[B])
