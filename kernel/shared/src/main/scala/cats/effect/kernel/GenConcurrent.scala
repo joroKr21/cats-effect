@@ -144,12 +144,19 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
       MiniSemaphore[F](n) flatMap { sem =>
         val results = ta traverse { a =>
           F.uncancelable { _ =>
-            sem.acquire >> f(a).guarantee(sem.release).start map { fiber =>
-              supervision.update(_ + fiber) *>
-                fiber
-                  .joinWithNever
-                  .onCancel(fiber.cancel)
-                  .guarantee(supervision.update(_ - fiber))
+            F.deferred[Outcome[F, E, B]] flatMap { result =>
+              sem.acquire >> f(a)
+                .guaranteeCase(oc => result.complete(oc) *> sem.release)
+                .void
+                .voidError
+                .start map { fiber =>
+                supervision.update(_ + fiber) *>
+                  result
+                    .get
+                    .flatMap(_.embedNever)
+                    .onCancel(fiber.cancel)
+                    .guarantee(supervision.update(_ - fiber))
+              }
             }
           }
         }
