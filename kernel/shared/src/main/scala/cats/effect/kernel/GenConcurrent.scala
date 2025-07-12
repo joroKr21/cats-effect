@@ -139,23 +139,25 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
 
     implicit val F: GenConcurrent[F, E] = this
 
-    // TODO we need to write a test for error cancelation
     F.ref[Set[Fiber[F, ?, ?]]](Set()) flatMap { supervision =>
       MiniSemaphore[F](n) flatMap { sem =>
         val results = ta traverse { a =>
-          F.uncancelable { _ =>
+          F.uncancelable { poll =>
             F.deferred[Outcome[F, E, B]] flatMap { result =>
-              sem.acquire >> f(a)
+              val action = poll(sem.acquire) >> f(a)
                 .guaranteeCase(oc => result.complete(oc) *> sem.release)
                 .void
                 .voidError
-                .start map { fiber =>
-                supervision.update(_ + fiber) *>
+                .start
+
+              action flatMap { fiber =>
+                supervision.update(_ + fiber) map { _ =>
                   result
                     .get
-                    .flatMap(_.embedNever)
+                    .flatMap(_.embed(F.canceled *> F.never))
                     .onCancel(fiber.cancel)
                     .guarantee(supervision.update(_ - fiber))
+                }
               }
             }
           }
@@ -192,7 +194,7 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
                 F.unit // allow the error to be resurfaced later
 
               case None =>
-                F.uncancelable { _ =>
+                F.uncancelable { poll =>
                   // if the effect produces an error, race to kill all the rest
                   val wrapped = f(a) guaranteeCase { oc =>
                     sem.release *> oc.fold(
@@ -201,7 +203,9 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
                       _ => F.unit)
                   }
 
-                  sem.acquire >> wrapped.start flatMap { fiber =>
+                  val suppressed = wrapped.void.voidError
+
+                  poll(sem.acquire) >> suppressed.start flatMap { fiber =>
                     // supervision is handled very differently here: we never remove from the set
                     supervision.update(fiber :: _)
                   }

@@ -1614,6 +1614,153 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
         p must completeAs(true)
       }
 
+      "run finalizers when canceled" in ticked { implicit ticker =>
+        val p = for {
+          r <- IO.ref(0)
+
+          /*
+           * The exact series of steps here is:
+           *
+           * List(IO.never.onCancel, IO.unit, IO.never.onCancel)
+           *
+           * This is significant because we're limiting the parallelism to
+           * 2, meaning that we will hit a wall after IO.unit. HOWEVER,
+           * IO.unit completes immediately, so this test not only checks
+           * cancelation, it also tests that we move onto the third item
+           * after the second one completes even while the first is blocked.
+           * In other words, it's testing both cancelation and head of line
+           * behavior.
+           */
+          f <- List(1, 2, 3)
+            .parTraverseN(2) { i =>
+              if (i == 2) IO.unit
+              else IO.never.onCancel(r.update(_ + 1))
+            }
+            .start
+
+          _ <- IO.sleep(100.millis)
+          _ <- f.cancel
+          c <- r.get
+          _ <- IO { c mustEqual 2 }
+        } yield true
+
+        p must completeAs(true)
+      }
+
+      "propagate self-cancellation" in ticked { implicit ticker =>
+        List(1, 2, 3, 4)
+          .parTraverseN(2) { (n: Int) =>
+            if (n == 3) IO.canceled *> IO.never
+            else IO.pure(n)
+          }
+          .void must selfCancel
+      }
+
+      "run finalizers when a task self-cancels" in ticked { implicit ticker =>
+        val p = for {
+          r <- IO.ref(0)
+          fib <- List(1, 2, 3, 4)
+            .parTraverseN(2) { (n: Int) =>
+              if (n == 3) IO.canceled *> IO.never
+              else IO.pure(n)
+            }
+            .onCancel(r.update(_ + 1))
+            .void
+            .start
+          _ <- IO.sleep(100.millis)
+          c <- r.get
+          _ <- IO { c mustEqual 1 }
+          oc <- fib.join
+        } yield oc.isCanceled
+
+        p must completeAs(true)
+      }
+
+      "not run more than `n` tasks at a time" in real {
+        def task(counter: Ref[IO, Int], maximum: Ref[IO, Int]): IO[Unit] = {
+          val acq = counter.updateAndGet(_ + 1).flatMap { count =>
+            maximum.update { max => if (count > max) count else max }
+          }
+          IO.asyncForIO.bracket(acq) { _ => IO.sleep(100.millis) }(_ => counter.update(_ - 1))
+        }
+
+        for {
+          maximum <- Ref.of[IO, Int](0)
+          counter <- Ref.of[IO, Int](0)
+          nCpu <- IO { Runtime.getRuntime().availableProcessors() }
+          n = java.lang.Math.max(nCpu, 2)
+          size = 4 * n
+          res <- (1 to size).toList.parTraverseN(n) { _ => task(counter, maximum) }
+          _ <- IO { res.size mustEqual size }
+          count <- counter.get
+          _ <- IO { count mustEqual 0 }
+          max <- maximum.get
+          _ <- IO { max must beLessThanOrEqualTo(n) }
+        } yield ok
+      }
+
+      "run actually in parallel" in real {
+        val n = 4
+        (1 to 2 * n)
+          .toList
+          .map { i => IO.sleep(1.second).as(i) }
+          .parSequenceN(n)
+          .timeout(3.seconds)
+          .flatMap { res => IO { res mustEqual (1 to 2 * n).toList } }
+      }
+
+      "work for empty traverse" in ticked { implicit ticker =>
+        List.empty[Int].parTraverseN(4) { _ => IO.never[String] } must completeAs(
+          List.empty[String])
+      }
+
+      "work for non-empty traverse (ticked)" in ticked { implicit ticker =>
+        List(1).parTraverseN(4) { i => IO.pure(i.toString) } must completeAs(List("1"))
+        List(1, 2).parTraverseN(3) { i => IO.pure(i.toString) } must completeAs(List("1", "2"))
+        List(1, 2, 3).parTraverseN(2) { i => IO.pure(i.toString) } must completeAs(
+          List("1", "2", "3"))
+        List(1, 2, 3, 4).parTraverseN(1) { i => IO.pure(i.toString) } must completeAs(
+          List("1", "2", "3", "4"))
+      }
+
+      "work for non-empty traverse (real)" in real {
+        for {
+          _ <- List(1).parTraverseN(4)(i => IO.pure(i.toString)).flatMap { r =>
+            IO(r mustEqual List("1"))
+          }
+          _ <- List(1, 2).parTraverseN(3)(i => IO.pure(i.toString)).flatMap { r =>
+            IO(r mustEqual List("1", "2"))
+          }
+          _ <- List(1, 2, 3).parTraverseN(2)(i => IO.pure(i.toString)).flatMap { r =>
+            IO(r mustEqual List("1", "2", "3"))
+          }
+          _ <- List(1, 2, 3, 4).parTraverseN(1)(i => IO.pure(i.toString)).flatMap { r =>
+            IO(r mustEqual List("1", "2", "3", "4"))
+          }
+          _ <- (1 to 10000).toList.parTraverseN(2)(i => IO.pure(i.toString)).flatMap { r =>
+            IO(r mustEqual (1 to 10000).map(_.toString).toList)
+          }
+        } yield ok
+      }
+
+      "be null-safe" in real {
+        for {
+          r1 <- List[String]("a", "b", null, "d", null).parTraverseN(2) {
+            case "a" => IO.pure(null)
+            case "b" => IO.pure("x")
+            case "d" => IO.pure(null)
+            case null => IO.pure("z")
+          }
+          _ <- IO { r1 mustEqual List(null, "x", "z", null, "z") }
+          r2 <- List(1, 2, 3)
+            .parTraverseN(2) { i =>
+              if (i == 2) null
+              else IO.pure(i)
+            }
+            .attempt
+          _ <- IO { r2 must beLike { case Left(e) => e must haveClass[NullPointerException] } }
+        } yield ok
+      }
     }
 
     "parTraverseN_" should {
