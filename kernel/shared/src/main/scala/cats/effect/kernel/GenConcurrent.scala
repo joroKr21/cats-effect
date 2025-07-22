@@ -139,34 +139,49 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
 
     implicit val F: GenConcurrent[F, E] = this
 
-    F.ref[Set[Fiber[F, ?, ?]]](Set()) flatMap { supervision =>
-      MiniSemaphore[F](n) flatMap { sem =>
-        val results = ta traverse { a =>
-          F.uncancelable { poll =>
-            F.deferred[Outcome[F, E, B]] flatMap { result =>
-              val action = poll(sem.acquire) >> f(a)
-                .guaranteeCase(oc => result.complete(oc) *> sem.release)
-                .void
-                .voidError
-                .start
+    F.deferred[Option[E]] flatMap { preempt =>
+      F.ref[Set[Fiber[F, ?, ?]]](Set()) flatMap { supervision =>
+        MiniSemaphore[F](n) flatMap { sem =>
+          val results = ta traverse { a =>
+            preempt.tryGet flatMap {
+              case Some(_) =>
+                // it's okay to produce never here because the early abort preceeds us
+                // this effect won't get sequenced, so it can be anything really
+                F.pure(F.never[B])
 
-              action flatMap { fiber =>
-                supervision.update(_ + fiber) map { _ =>
-                  result
-                    .get
-                    .flatMap(_.embed(F.canceled *> F.never))
-                    .onCancel(fiber.cancel)
-                    .guarantee(supervision.update(_ - fiber))
+              case None =>
+                F.uncancelable { poll =>
+                  F.deferred[Outcome[F, E, B]] flatMap { result =>
+                    val action = poll(sem.acquire) >> f(a)
+                      .guaranteeCase { oc =>
+                        result.complete(oc) *> oc.fold(
+                          preempt.complete(None).void,
+                          e => preempt.complete(Some(e)).void,
+                          _ => F.unit) *> sem.release
+                      }
+                      .void
+                      .voidError
+                      .start
+
+                    action flatMap { fiber =>
+                      supervision.update(_ + fiber) map { _ =>
+                        result
+                          .get
+                          .flatMap(_.embed(F.canceled *> F.never))
+                          .onCancel(fiber.cancel)
+                          .guarantee(supervision.update(_ - fiber))
+                      }
+                    }
+                  }
                 }
-              }
             }
           }
-        }
 
-        results.flatMap(_.sequence) guaranteeCase {
-          case Outcome.Succeeded(_) => F.unit
-          // has to be done in parallel to avoid head of line issues
-          case _ => supervision.get.flatMap(_.toList.parTraverse_(_.cancel))
+          results.flatMap(_.sequence) guaranteeCase {
+            case Outcome.Succeeded(_) => F.unit
+            // has to be done in parallel to avoid head of line issues
+            case _ => supervision.get.flatMap(_.toList.parTraverse_(_.cancel))
+          }
         }
       }
     }
