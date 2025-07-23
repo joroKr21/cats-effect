@@ -1754,6 +1754,14 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
           _ <- IO { r1 mustEqual List(null, "x", "z", null, "z") }
         } yield ok
       }
+
+      "short-circuit on error" in real {
+        case object TestException extends RuntimeException
+        val target = 0.until(100000).toList
+        val test = target.parTraverseN(2)(_ => IO.raiseError(TestException))
+
+        test.attempt.timeoutTo(500.millis, IO(false must beTrue)).as(ok)
+      }
     }
 
     "parTraverseN_" should {
