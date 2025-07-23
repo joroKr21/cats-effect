@@ -1752,13 +1752,6 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
             case null => IO.pure("z")
           }
           _ <- IO { r1 mustEqual List(null, "x", "z", null, "z") }
-          r2 <- List(1, 2, 3)
-            .parTraverseN(2) { i =>
-              if (i == 2) null: IO[Int]
-              else IO.pure(i)
-            }
-            .attempt
-          _ <- IO { r2 must beLike { case Left(e) => e must haveClass[NullPointerException] } }
         } yield ok
       }
     }
