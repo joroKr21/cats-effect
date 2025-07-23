@@ -1754,7 +1754,7 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
           _ <- IO { r1 mustEqual List(null, "x", "z", null, "z") }
           r2 <- List(1, 2, 3)
             .parTraverseN(2) { i =>
-              if (i == 2) null
+              if (i == 2) null: IO[Int]
               else IO.pure(i)
             }
             .attempt
