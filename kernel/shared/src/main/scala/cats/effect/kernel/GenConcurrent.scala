@@ -141,6 +141,9 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
 
     F.deferred[Option[E]] flatMap { preempt =>
       F.ref[Set[Fiber[F, ?, ?]]](Set()) flatMap { supervision =>
+        // has to be done in parallel to avoid head of line issues
+        val cancelAllF = supervision.get.flatMap(_.toList.parTraverse_(_.cancel))
+
         MiniSemaphore[F](n) flatMap { sem =>
           val results = ta traverse { a =>
             preempt.tryGet flatMap {
@@ -154,10 +157,43 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
                   F.deferred[Outcome[F, E, B]] flatMap { result =>
                     val action = poll(sem.acquire) >> f(a)
                       .guaranteeCase { oc =>
-                        result.complete(oc) *> oc.fold(
-                          preempt.complete(None).void,
-                          e => preempt.complete(Some(e)).void,
-                          _ => F.unit) *> sem.release
+                        val completion = oc match {
+                          case Outcome.Succeeded(_) =>
+                            preempt.tryGet flatMap {
+                              case Some(Some(e)) =>
+                                result.complete(Outcome.Errored(e))
+
+                              case Some(None) =>
+                                result.complete(Outcome.Canceled())
+
+                              case None =>
+                                result.complete(oc)
+                            }
+
+                          case Outcome.Errored(e) =>
+                            preempt.complete(Some(e)) flatMap { won =>
+                              if (won)
+                                result.complete(oc) <* cancelAllF.start // avoid deadlock
+                              else
+                                preempt.get flatMap {
+                                  case Some(e) => result.complete(Outcome.Errored(e))
+                                  case None => result.complete(Outcome.Canceled())
+                                }
+                            }
+
+                          case Outcome.Canceled() =>
+                            preempt.complete(None) flatMap { won =>
+                              if (won)
+                                result.complete(oc) <* cancelAllF.start // avoid deadlock
+                              else
+                                preempt.get flatMap {
+                                  case Some(e) => result.complete(Outcome.Errored(e))
+                                  case None => result.complete(Outcome.Canceled())
+                                }
+                            }
+                        }
+
+                        completion *> sem.release
                       }
                       .void
                       .voidError
@@ -177,11 +213,7 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
             }
           }
 
-          results.flatMap(_.sequence) guaranteeCase {
-            case Outcome.Succeeded(_) => F.unit
-            // has to be done in parallel to avoid head of line issues
-            case _ => supervision.get.flatMap(_.toList.parTraverse_(_.cancel))
-          }
+          results.flatMap(_.sequence).onCancel(cancelAllF)
         }
       }
     }

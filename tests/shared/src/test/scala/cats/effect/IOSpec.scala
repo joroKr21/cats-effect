@@ -1762,6 +1762,30 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
 
         test.attempt.timeoutTo(500.millis, IO(false must beTrue)).as(ok)
       }
+
+      "run finalizers in parallel" in ticked { implicit ticker =>
+        // this test also tests to ensure that we get the errored results rather than cancels
+        // note that the first two effects will have a Canceled outcome, while the third is Errored
+        // if we just go by first wins in sequence, then Canceled is the (incorrect) result
+        // first wins *in time* is the expected semantic here
+        val test = for {
+          latch1 <- IO.deferred[Unit]
+          latch2 <- IO.deferred[Unit]
+
+          _ <- List(1, 2, 3).parTraverseN(3) {
+            case 1 =>
+              IO.never.onCancel(latch1.complete(()) *> latch2.get)
+
+            case 2 =>
+              IO.never.onCancel(latch2.complete(()) *> latch1.get)
+
+            case 3 =>
+              IO.sleep(10.millis) *> IO.raiseError(new RuntimeException)
+          }
+        } yield ()
+
+        test.attempt.void must completeAs(())
+      }
     }
 
     "parTraverseN_" should {
