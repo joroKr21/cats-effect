@@ -517,6 +517,12 @@ lazy val core = crossProject(JSPlatform, JVMPlatform, NativePlatform)
     libraryDependencies ++= Seq(
       "org.typelevel" %%% "cats-mtl" % CatsMtlVersion
     ),
+    scalacOptions ++= {
+      if (scalaVersion.value.startsWith("2.13"))
+        Some("-Xlint:-overload")
+      else
+        None
+    },
     mimaBinaryIssueFilters ++= Seq(
       // introduced by #1837, removal of package private class
       ProblemFilters.exclude[MissingClassProblem]("cats.effect.AsyncPropagateCancelation"),
@@ -1074,6 +1080,12 @@ lazy val std = crossProject(JSPlatform, JVMPlatform, NativePlatform)
     libraryDependencies ++= Seq(
       "org.scalameta" %%% "munit" % MUnitVersion % Test
     ),
+    scalacOptions ++= {
+      if (scalaVersion.value.startsWith("2.13"))
+        Some("-Xlint:-overload")
+      else
+        None
+    },
     mimaBinaryIssueFilters ++= {
       if (tlIsScala3.value) {
         Seq(
