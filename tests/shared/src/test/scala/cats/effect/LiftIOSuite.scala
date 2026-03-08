@@ -16,12 +16,18 @@
 
 package cats.effect
 
-class ThunkSuite extends BaseSuite {
+import cats.Applicative
+import cats.data.IdT
+import cats.mtl.LiftValue
 
-  testUnit("return the same function") {
-    var i = 0
-    val f = () => { i = i + 1 }
-    assertEquals(IO.delay(f()).asInstanceOf[IO.Delay[Unit]].thunk, f)
+class LiftIOSuite extends BaseSuite {
+  ticked("LiftIO from LiftValue") { implicit ticker =>
+    implicit val lift: LiftValue[IO, IdT[IO, *]] =
+      new LiftValue[IO, IdT[IO, *]] {
+        def applicativeF: Applicative[IO] = implicitly
+        def applicativeG: Applicative[IdT[IO, *]] = implicitly
+        def apply[A](fa: IO[A]): IdT[IO, A] = IdT(fa)
+      }
+    assertCompleteAs(IO.pure(42).to[IdT[IO, *]].value, 42)
   }
-
 }
