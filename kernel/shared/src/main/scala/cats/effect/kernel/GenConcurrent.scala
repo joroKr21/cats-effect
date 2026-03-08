@@ -130,9 +130,17 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
     parTraverseN_(n)(tma)(identity)
 
   /**
-   * Like `Parallel.parTraverse`, but limits the degree of parallelism. Note that the semantics
-   * of this operation aim to maximise fairness: when a spot to execute becomes available, every
-   * task has a chance to claim it, and not only the next `n` tasks in `ta`
+   * Like `Parallel.parTraverse`, but limits the degree of parallelism. The semantics of this
+   * function are ordered based on the `Traverse`. The first ''n'' actions will be started
+   * first, with subsequent actions starting in order as each one completes. Actions which are
+   * reached earlier in `traverse` order will be started slightly sooner than later actions, in
+   * a non-blocking fashion. Any errors or self-cancelation will immediately abort the sequence.
+   * If multiple actios produce errors simultaneously, one of them will be nondeterministically
+   * selected for production. If all actions succeed, their results are returned in the same
+   * order as their corresponding inputs, regardless of the order in which they executed.
+   *
+   * The `f` function is run as part of running the action: in parallel and subject to the
+   * limit.
    */
   def parTraverseN[T[_]: Traverse, A, B](n: Int)(ta: T[A])(f: A => F[B]): F[T[B]] = {
     require(n >= 1, s"Concurrency limit should be at least 1, was: $n")
@@ -164,6 +172,7 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
                 case None =>
                   F.uncancelable { poll =>
                     F.deferred[Outcome[F, E, B]] flatMap { result =>
+                      // laziness is significant here, since it pushes the `f` into the fiber
                       val action = poll(sem.acquire) >> f(a)
                         .guaranteeCase { oc =>
                           val completion = oc match {
@@ -221,9 +230,16 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
   }
 
   /**
-   * Like `Parallel.parTraverse_`, but limits the degree of parallelism. Note that the semantics
-   * of this operation aim to maximise fairness: when a spot to execute becomes available, every
-   * task has a chance to claim it, and not only the next `n` tasks in `ta`
+   * Like `Parallel.parTraverse_`, but limits the degree of parallelism. The semantics of this
+   * function are ordered based on the `Foldable`. The first ''n'' actions will be started
+   * first, with subsequent actions starting in order as each one completes. Actions which are
+   * reached earlier in `foldLeftM` order will be started slightly sooner than later actions, in
+   * a non-blocking fashion. Any errors or self-cancelation will immediately abort the sequence.
+   * If multiple actios produce errors simultaneously, one of them will be nondeterministically
+   * selected for production.
+   *
+   * The `f` function is run as part of running the action: in parallel and subject to the
+   * limit.
    */
   def parTraverseN_[T[_]: Foldable, A, B](n: Int)(ta: T[A])(f: A => F[B]): F[Unit] = {
     require(n >= 1, s"Concurrency limit should be at least 1, was: $n")
@@ -262,7 +278,8 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
 
                   val suppressed = wrapped.void.voidError.guarantee(sem.release)
 
-                  poll(sem.acquire) *> suppressed.start flatMap { fiber =>
+                  // the laziness is significant here since it pushes the f into the fiber
+                  poll(sem.acquire) >> suppressed.start flatMap { fiber =>
                     // supervision is handled very differently here: we never remove from the set
                     supervision.update(fiber :: _)
                   }
