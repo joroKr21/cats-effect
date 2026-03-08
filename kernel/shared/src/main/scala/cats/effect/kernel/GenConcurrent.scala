@@ -172,8 +172,8 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
                 case None =>
                   F.uncancelable { poll =>
                     F.deferred[Outcome[F, E, B]] flatMap { result =>
-                      // laziness is significant here, since it pushes the `f` into the fiber
-                      val action = poll(sem.acquire) >> f(a)
+                      // the laziness is a poor mans defer; this ensures the f gets pushed to the fiber
+                      val action = poll(sem.acquire) *> (F.unit >> f(a))
                         .guaranteeCase { oc =>
                           val completion = oc match {
                             case Outcome.Succeeded(_) =>
@@ -265,7 +265,8 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
               case None =>
                 F.uncancelable { poll =>
                   // if the effect produces a non-success, race to kill all the rest
-                  val wrapped = f(a) guaranteeCase {
+                  // the laziness is a poor mans defer; this ensures the f gets pushed to the fiber
+                  val wrapped = (F.unit >> f(a)) guaranteeCase {
                     case Outcome.Succeeded(_) =>
                       F.unit
 
@@ -278,8 +279,7 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
 
                   val suppressed = wrapped.void.voidError.guarantee(sem.release)
 
-                  // the laziness is significant here since it pushes the f into the fiber
-                  poll(sem.acquire) >> suppressed.start flatMap { fiber =>
+                  poll(sem.acquire) *> suppressed.start flatMap { fiber =>
                     // supervision is handled very differently here: we never remove from the set
                     supervision.update(fiber :: _)
                   }
