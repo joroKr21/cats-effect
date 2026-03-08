@@ -140,81 +140,82 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
     implicit val F: GenConcurrent[F, E] = this
 
     F.deferred[Option[E]] flatMap { preempt =>
-      F.ref[Set[Fiber[F, ?, ?]]](Set()) flatMap { supervision =>
-        // has to be done in parallel to avoid head of line issues
-        val cancelAllF = supervision.get.flatMap(_.toList.parTraverse_(_.cancel))
+      F.ref[Set[(Fiber[F, ?, ?], Deferred[F, Outcome[F, E, B]])]](Set()) flatMap {
+        supervision =>
+          // has to be done in parallel to avoid head of line issues
+          def cancelAll(cause: Option[E]) = supervision.get flatMap { states =>
+            val causeOC: Outcome[F, E, B] = cause match {
+              case Some(e) => Outcome.Errored(e)
+              case None => Outcome.Canceled()
+            }
 
-        MiniSemaphore[F](n) flatMap { sem =>
-          val results = ta traverse { a =>
-            preempt.tryGet flatMap {
-              case Some(_) =>
-                // it's okay to produce never here because the early abort preceeds us
-                // this effect won't get sequenced, so it can be anything really
-                F.pure(F.never[B])
-
-              case None =>
-                F.uncancelable { poll =>
-                  F.deferred[Outcome[F, E, B]] flatMap { result =>
-                    val action = poll(sem.acquire) >> f(a)
-                      .guaranteeCase { oc =>
-                        val completion = oc match {
-                          case Outcome.Succeeded(_) =>
-                            preempt.tryGet flatMap {
-                              case Some(Some(e)) =>
-                                result.complete(Outcome.Errored(e))
-
-                              case Some(None) =>
-                                result.complete(Outcome.Canceled())
-
-                              case None =>
-                                result.complete(oc)
-                            }
-
-                          case Outcome.Errored(e) =>
-                            preempt.complete(Some(e)) flatMap { won =>
-                              if (won)
-                                result.complete(oc) <* cancelAllF.start // avoid deadlock
-                              else
-                                preempt.get flatMap {
-                                  case Some(e) => result.complete(Outcome.Errored(e))
-                                  case None => result.complete(Outcome.Canceled())
-                                }
-                            }
-
-                          case Outcome.Canceled() =>
-                            preempt.complete(None) flatMap { won =>
-                              if (won)
-                                result.complete(oc) <* cancelAllF.start // avoid deadlock
-                              else
-                                preempt.get flatMap {
-                                  case Some(e) => result.complete(Outcome.Errored(e))
-                                  case None => result.complete(Outcome.Canceled())
-                                }
-                            }
-                        }
-
-                        completion *> sem.release
-                      }
-                      .void
-                      .voidError
-                      .start
-
-                    action flatMap { fiber =>
-                      supervision.update(_ + fiber) map { _ =>
-                        result
-                          .get
-                          .flatMap(_.embed(F.canceled *> F.never))
-                          .onCancel(fiber.cancel)
-                          .guarantee(supervision.update(_ - fiber))
-                      }
-                    }
-                  }
-                }
+            states.toList parTraverse_ {
+              case (fiber, result) =>
+                result.complete(causeOC) *> fiber.cancel
             }
           }
 
-          results.flatMap(_.sequence).onCancel(cancelAllF)
-        }
+          MiniSemaphore[F](n) flatMap { sem =>
+            val results = ta traverse { a =>
+              preempt.tryGet flatMap {
+                case Some(Some(e)) => F.pure(F.raiseError[B](e))
+                case Some(None) => F.pure(F.canceled *> F.never[B])
+
+                case None =>
+                  F.uncancelable { poll =>
+                    F.deferred[Outcome[F, E, B]] flatMap { result =>
+                      val action = poll(sem.acquire) >> f(a)
+                        .guaranteeCase { oc =>
+                          val completion = oc match {
+                            case Outcome.Succeeded(_) =>
+                              preempt.tryGet flatMap {
+                                case Some(Some(e)) =>
+                                  result.complete(Outcome.Errored(e))
+
+                                case Some(None) =>
+                                  result.complete(Outcome.Canceled())
+
+                                case None =>
+                                  result.complete(oc)
+                              }
+
+                            case Outcome.Errored(e) =>
+                              preempt
+                                .complete(Some(e))
+                                .ifM(
+                                  result.complete(oc) <* cancelAll(Some(e)).start,
+                                  false.pure[F])
+
+                            case Outcome.Canceled() =>
+                              preempt
+                                .complete(None)
+                                .ifM(
+                                  result.complete(oc) <* cancelAll(None).start,
+                                  false.pure[F])
+                          }
+
+                          completion *> sem.release
+                        }
+                        .void
+                        .voidError
+                        .start
+
+                      action flatMap { fiber =>
+                        supervision.update(_ + ((fiber, result))) map { _ =>
+                          result
+                            .get
+                            .flatMap(_.embed(F.canceled *> F.never))
+                            .onCancel(fiber.cancel)
+                            .guarantee(supervision.update(_ - ((fiber, result))))
+                        }
+                      }
+                    }
+                  }
+              }
+            }
+
+            results.flatMap(_.sequence).onCancel(cancelAll(None))
+          }
       }
     }
   }
@@ -229,30 +230,39 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
 
     implicit val F: GenConcurrent[F, E] = this
 
-    // TODO we need to write a test for error cancelation
     F.deferred[Option[E]] flatMap { preempt =>
       F.ref[List[Fiber[F, ?, ?]]](Nil) flatMap { supervision =>
         MiniSemaphore[F](n) flatMap { sem =>
+          val cancelAll = supervision.get.flatMap(_.parTraverse_(_.cancel))
+
+          // doesn't complete until every fiber has been at least *started*
           val startAll = ta traverse_ { a =>
             // first check to see if any of the effects have errored out
             // don't bother starting new things if that happens
             preempt.tryGet flatMap {
-              case Some(_) =>
-                F.unit // allow the error to be resurfaced later
+              case Some(Some(e)) =>
+                F.raiseError[Unit](e)
+
+              case Some(None) =>
+                F.canceled
 
               case None =>
                 F.uncancelable { poll =>
-                  // if the effect produces an error, race to kill all the rest
-                  val wrapped = f(a) guaranteeCase { oc =>
-                    sem.release *> oc.fold(
-                      preempt.complete(None).void,
-                      e => preempt.complete(Some(e)).void,
-                      _ => F.unit)
+                  // if the effect produces a non-success, race to kill all the rest
+                  val wrapped = f(a) guaranteeCase {
+                    case Outcome.Succeeded(_) =>
+                      F.unit
+
+                    case Outcome.Errored(e) =>
+                      preempt.complete(Some(e)).void
+
+                    case Outcome.Canceled() =>
+                      preempt.complete(None).void
                   }
 
-                  val suppressed = wrapped.void.voidError
+                  val suppressed = wrapped.void.voidError.guarantee(sem.release)
 
-                  poll(sem.acquire) >> suppressed.start flatMap { fiber =>
+                  poll(sem.acquire) *> suppressed.start flatMap { fiber =>
                     // supervision is handled very differently here: we never remove from the set
                     supervision.update(fiber :: _)
                   }
@@ -260,18 +270,26 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
             }
           }
 
-          val cancelAll = supervision.get.flatMap(_.parTraverse_(_.cancel))
+          // we only run this when we know that supervision is full
+          val awaitAll = preempt.tryGet flatMap {
+            case Some(_) => F.unit
+            case None =>
+              F.race(preempt.get.void, supervision.get.flatMap(_.traverse_(_.join.void))).void
+          }
 
-          startAll.onCancel(cancelAll) *>
-            // we block until it's all done by acquiring all the permits
-            F.race(preempt.get *> cancelAll, sem.acquire.replicateA_(n)) *>
-            // if we hit an error or self-cancelation in any effect, resurface it here
-            // note that we can't lose errors here because of the permits: we know the fibers are done
-            preempt.tryGet flatMap {
-              case Some(Some(e)) => F.raiseError(e)
-              case Some(None) => F.canceled
-              case None => F.unit
-            }
+          // if we hit an error or self-cancelation in any effect, resurface it here
+          val resurface = preempt.tryGet flatMap {
+            case Some(Some(e)) => F.raiseError[Unit](e)
+            case Some(None) => F.canceled
+            case None => F.unit
+          }
+
+          val work = (startAll *> awaitAll) guaranteeCase {
+            case Outcome.Succeeded(_) => F.unit
+            case Outcome.Errored(_) | Outcome.Canceled() => preempt.complete(None) *> cancelAll
+          }
+
+          work *> resurface
         }
       }
     }
