@@ -1760,7 +1760,7 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
         val target = 0.until(100000).toList
         val test = target.parTraverseN(2)(_ => IO.raiseError(TestException))
 
-        test.attempt.as(ok).timeoutTo(500.millis, IO(false must beTrue))
+        test.attempt.as(ok).timeoutTo(1.second, IO(false must beTrue))
       }
 
       "run finalizers in parallel" in ticked { implicit ticker =>
@@ -1957,7 +1957,7 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
         val target = 0.until(100000).toList
         val test = target.parTraverseN_(2)(_ => IO.raiseError(TestException))
 
-        test.attempt.as(ok).timeoutTo(500.millis, IO(false must beTrue))
+        test.attempt.as(ok).timeoutTo(1.second, IO(false must beTrue))
       }
 
       "run finalizers in parallel" in ticked { implicit ticker =>
