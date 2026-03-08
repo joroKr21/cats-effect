@@ -17,6 +17,7 @@
 package cats.effect
 
 import cats.effect.std.Semaphore
+import cats.effect.syntax.all._
 import cats.effect.unsafe.{
   IORuntime,
   IORuntimeConfig,
@@ -27,7 +28,6 @@ import cats.effect.unsafe.{
   WorkStealingThreadPool
 }
 import cats.effect.unsafe.metrics.PollerMetrics
-import cats.effect.syntax.all._
 import cats.syntax.all._
 
 import org.scalacheck.Prop.forAll
