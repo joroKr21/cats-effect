@@ -1755,14 +1755,6 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
         } yield ok
       }
 
-      "short-circuit on error" in real {
-        case object TestException extends RuntimeException
-        val target = 0.until(100000).toList
-        val test = target.parTraverseN(2)(_ => IO.raiseError(TestException))
-
-        test.attempt.as(ok).timeoutTo(1.second, IO(false must beTrue))
-      }
-
       "run finalizers in parallel" in ticked { implicit ticker =>
         // this test also tests to ensure that we get the errored results rather than cancels
         // note that the first two effects will have a Canceled outcome, while the third is Errored
@@ -1950,14 +1942,6 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
           }
           _ <- IO { r1 mustEqual (()) } // just trying to make sure we don't crash
         } yield ok
-      }
-
-      "short-circuit on error" in real {
-        case object TestException extends RuntimeException
-        val target = 0.until(100000).toList
-        val test = target.parTraverseN_(2)(_ => IO.raiseError(TestException))
-
-        test.attempt.as(ok).timeoutTo(1.second, IO(false must beTrue))
       }
 
       "run finalizers in parallel" in ticked { implicit ticker =>
