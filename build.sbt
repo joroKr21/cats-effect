@@ -115,7 +115,7 @@ val Windows = "windows-latest"
 val MacOS = "macos-14"
 
 val Scala212 = "2.12.20"
-val Scala213 = "2.13.16"
+val Scala213 = "2.13.18"
 val Scala3 = "3.3.7"
 
 ThisBuild / crossScalaVersions := Seq(Scala3, Scala212, Scala213)
@@ -517,6 +517,12 @@ lazy val core = crossProject(JSPlatform, JVMPlatform, NativePlatform)
     libraryDependencies ++= Seq(
       "org.typelevel" %%% "cats-mtl" % CatsMtlVersion
     ),
+    scalacOptions ++= {
+      if (scalaVersion.value.startsWith("2.13"))
+        Some("-Xlint:-overload")
+      else
+        None
+    },
     mimaBinaryIssueFilters ++= Seq(
       // introduced by #1837, removal of package private class
       ProblemFilters.exclude[MissingClassProblem]("cats.effect.AsyncPropagateCancelation"),
@@ -1008,7 +1014,8 @@ lazy val tests: CrossProject = crossProject(JSPlatform, JVMPlatform, NativePlatf
     Compile / scalaJSUseMainModuleInitializer := true,
     Compile / mainClass := Some("catseffect.examples.JSRunner"),
     // The default configured mapSourceURI is used for trace filtering
-    scalacOptions ~= { _.filterNot(_.startsWith("-P:scalajs:mapSourceURI")) }
+    scalacOptions ~= { _.filterNot(_.startsWith("-P:scalajs:mapSourceURI")) },
+    Test / scalaJSLinkerConfig ~= { _.withOptimizer(false) }    // scala-js/scala-js#5331
   )
   .jvmSettings(
     fork := true,
@@ -1073,6 +1080,12 @@ lazy val std = crossProject(JSPlatform, JVMPlatform, NativePlatform)
     libraryDependencies ++= Seq(
       "org.scalameta" %%% "munit" % MUnitVersion % Test
     ),
+    scalacOptions ++= {
+      if (scalaVersion.value.startsWith("2.13"))
+        Some("-Xlint:-overload")
+      else
+        None
+    },
     mimaBinaryIssueFilters ++= {
       if (tlIsScala3.value) {
         Seq(
