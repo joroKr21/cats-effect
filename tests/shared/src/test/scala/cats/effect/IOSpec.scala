@@ -1868,36 +1868,46 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
         p must completeAs(true)
       }
 
-      "run finalizers when a task self-cancels after everything started" in ticked { implicit ticker =>
-        val p = for {
-          ds <- IO.deferred[Unit].replicateA(3)
-          f <- ds.parTraverseN_(4) { d =>
-            (if (d eq ds(1)) IO.sleep(100.millis) *> IO.canceled
-            else IO.never).onCancel(d.complete(()).void)
-          }.start
-          _ <- IO.sleep(50.millis) // all 3 fibers start (limit is 4)
-          oc <- f.join // after another 50ms, one of them self-cancels
-          _ <- IO { oc.isCanceled mustEqual true }
-          _ <- ds.traverse_(_.get) // every finalizer must've ran, so every Deferred must be completed
-        } yield true
+      "run finalizers when a task self-cancels after everything started" in ticked {
+        implicit ticker =>
+          val p = for {
+            ds <- IO.deferred[Unit].replicateA(3)
+            f <- ds
+              .parTraverseN_(4) { d =>
+                (if (d eq ds(1)) IO.sleep(100.millis) *> IO.canceled
+                 else IO.never).onCancel(d.complete(()).void)
+              }
+              .start
+            _ <- IO.sleep(50.millis) // all 3 fibers start (limit is 4)
+            oc <- f.join // after another 50ms, one of them self-cancels
+            _ <- IO { oc.isCanceled mustEqual true }
+            _ <- ds.traverse_(
+              _.get
+            ) // every finalizer must've ran, so every Deferred must be completed
+          } yield true
 
-        p must completeAs(true)
+          p must completeAs(true)
       }
 
-      "run finalizers when a task errors after everything started" in ticked { implicit ticker =>
-        val p = for {
-          ds <- IO.deferred[Unit].replicateA(3)
-          f <- ds.parTraverseN_(4) { d =>
-            (if (d eq ds(1)) IO.sleep(100.millis) *> IO.raiseError(new Exception)
-            else IO.never).guarantee(d.complete(()).void)
-          }.start
-          _ <- IO.sleep(50.millis) // all 3 fibers start (limit is 4)
-          oc <- f.join // after another 50ms, one of them errors
-          _ <- IO { oc.isError mustEqual true }
-          _ <- ds.traverse_(_.get) // every finalizer must've ran, so every Deferred must be completed
-        } yield true
+      "run finalizers when a task errors after everything started" in ticked {
+        implicit ticker =>
+          val p = for {
+            ds <- IO.deferred[Unit].replicateA(3)
+            f <- ds
+              .parTraverseN_(4) { d =>
+                (if (d eq ds(1)) IO.sleep(100.millis) *> IO.raiseError(new Exception)
+                 else IO.never).guarantee(d.complete(()).void)
+              }
+              .start
+            _ <- IO.sleep(50.millis) // all 3 fibers start (limit is 4)
+            oc <- f.join // after another 50ms, one of them errors
+            _ <- IO { oc.isError mustEqual true }
+            _ <- ds.traverse_(
+              _.get
+            ) // every finalizer must've ran, so every Deferred must be completed
+          } yield true
 
-        p must completeAs(true)
+          p must completeAs(true)
       }
 
       "not run more than `n` tasks at a time" in real {
