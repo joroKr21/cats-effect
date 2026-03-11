@@ -135,7 +135,7 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
    * first, with subsequent actions starting in order as each one completes. Actions which are
    * reached earlier in `traverse` order will be started slightly sooner than later actions, in
    * a non-blocking fashion. Any errors or self-cancelation will immediately abort the sequence.
-   * If multiple actios produce errors simultaneously, one of them will be nondeterministically
+   * If multiple actions produce errors simultaneously, one of them will be nondeterministically
    * selected for production. If all actions succeed, their results are returned in the same
    * order as their corresponding inputs, regardless of the order in which they executed.
    *
@@ -235,7 +235,7 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
    * first, with subsequent actions starting in order as each one completes. Actions which are
    * reached earlier in `foldLeftM` order will be started slightly sooner than later actions, in
    * a non-blocking fashion. Any errors or self-cancelation will immediately abort the sequence.
-   * If multiple actios produce errors simultaneously, one of them will be nondeterministically
+   * If multiple actions produce errors simultaneously, one of them will be nondeterministically
    * selected for production.
    *
    * The `f` function is run as part of running the action: in parallel and subject to the
