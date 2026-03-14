@@ -277,7 +277,8 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
                       preempt.complete(None).void
                   }
 
-                  val suppressed = wrapped.void.voidError.guarantee(sem.release)
+                  // only release the semaphore if we *haven't* errored
+                  val suppressed = wrapped.void.voidError *> sem.release
 
                   poll(sem.acquire) *> suppressed.start flatMap { fiber =>
                     // supervision is handled very differently here: we never remove from the set
@@ -291,13 +292,16 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
           val awaitAll = preempt.tryGet flatMap {
             case Some(_) => F.unit
             case None =>
-              F.race(preempt.get.void, supervision.get.flatMap(_.traverse_(_.join.void))).void
+              F.race(
+                preempt.get.void,
+                supervision.get.flatMap(_.traverse_(f => f.join.void).onCancel(cancelAll)))
+                .void
           }
 
           // if we hit an error or self-cancelation in any effect, resurface it here
-          val resurface = preempt.tryGet flatMap {
+          def resurface(poll: Poll[F]) = preempt.tryGet flatMap {
             case Some(Some(e)) => F.raiseError[Unit](e)
-            case Some(None) => F.canceled
+            case Some(None) => poll(F.canceled)
             case None => F.unit
           }
 
@@ -306,7 +310,7 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
             case Outcome.Errored(_) | Outcome.Canceled() => preempt.complete(None) *> cancelAll
           }
 
-          work *> resurface
+          F.uncancelable(poll => poll(work) *> resurface(poll))
         }
       }
     }
