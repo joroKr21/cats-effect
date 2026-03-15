@@ -24,7 +24,7 @@ import scala.concurrent.duration._
 import scala.util.{Random, Try}
 import scala.util.control.NonFatal
 
-import java.util.{Base64, Comparator, Collections}
+import java.util.{Base64, Collections, Comparator}
 import java.util.concurrent.ConcurrentSkipListSet
 import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
 
@@ -288,10 +288,11 @@ object TestContext {
       val lastReportedFailure: AtomicReference[Throwable] = new AtomicReference()
   )
 
-    private final class InternalState(
+  private final class InternalState(
       val currentID: AtomicLong = new AtomicLong(),
       val currentNanos: AtomicLong = new AtomicLong(),
-      val tasks: java.util.SortedSet[Task] = Collections.synchronizedSortedSet(new ConcurrentSkipListSet(Task.comparator)),
+      val tasks: java.util.SortedSet[Task] =
+        Collections.synchronizedSortedSet(new ConcurrentSkipListSet(Task.comparator)),
       val lastReportedFailure: AtomicReference[Throwable] = new AtomicReference()
   )
 
