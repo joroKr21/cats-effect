@@ -253,7 +253,7 @@ trait TestInstances extends ParallelFGenerators with OutcomeGenerators with Sync
   }
 
   @implicitNotFound(
-    "could not find an instance of Ticker; try using `in ticked { implicit ticker =>`")
+    "could not find an instance of Ticker; try declaring one with `implicit val ticker: Ticker = Ticker()`")
   case class Ticker(ctx: TestContext = TestContext())
 }
 
