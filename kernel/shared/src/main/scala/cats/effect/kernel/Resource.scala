@@ -993,7 +993,7 @@ object Resource extends ResourceFOInstances0 with ResourceHOInstances0 with Reso
   def onFinalizeCase[F[_]: Applicative](release: ExitCase => F[Unit]): Resource[F, Unit] =
     unit.onFinalizeCase(release)
 
-  private val cachedLiftK: Id ~> Resource[Id, *] =
+  private[this] val cachedLiftK: Id ~> Resource[Id, *] =
     new (Id ~> Resource[Id, *]) {
       def apply[A](fa: Id[A]): Resource[Id, A] = Resource.eval(fa)
     }
