@@ -129,11 +129,6 @@ ThisBuild / tlCiReleaseTags := true
 ThisBuild / tlCiReleaseBranches := Nil
 
 ThisBuild / githubWorkflowArtifactDownloadExtraKeys += "ci"
-ThisBuild / githubWorkflowPublishPreamble +=
-  WorkflowStep.Use(
-    UseRef.Public("typelevel", "await-cirrus", "main"),
-    name = Some("Wait for Cirrus CI")
-  )
 
 val OldGuardJava = JavaSpec.temurin("8")
 val LTSJava = JavaSpec.temurin("11")
