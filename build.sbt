@@ -321,7 +321,7 @@ ThisBuild / autoAPIMappings := true
 ThisBuild / Test / testOptions += Tests.Argument("+l")
 
 val CatsVersion = "2.13.0"
-val CatsMtlVersion = "1.6.0"
+val CatsMtlVersion = "1.7.0"
 val ScalaCheckVersion = "1.19.0"
 val CoopVersion = "1.3.0"
 val MUnitVersion = "1.1.0"
