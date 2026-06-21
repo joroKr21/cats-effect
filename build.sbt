@@ -114,6 +114,11 @@ val ArmOS = "ubuntu-22.04-arm"
 val Windows = "windows-latest"
 val MacOS = "macos-14"
 
+val ScalaNativeLLVM = "/usr/lib/llvm-15/bin"
+val ArmNativeCI = s"matrix.ci == '${CI.Native.command}' && matrix.os == '$ArmOS'"
+val NonArmNativeCI = s"matrix.ci != '${CI.Native.command}' || matrix.os != '$ArmOS'"
+val ArmNativeEnv = Map("LLVM_BIN" -> ScalaNativeLLVM)
+
 val Scala212 = "2.12.21"
 val Scala213 = "2.13.18"
 val Scala3 = "3.3.7"
@@ -178,7 +183,15 @@ ThisBuild / githubWorkflowBuild := Seq("JVM", "JS", "Native").map { platform =>
     ) // windows has file lock issues due to shared sources
   )
 } ++ Seq(
-  WorkflowStep.Sbt(List("${{ matrix.ci }}")),
+  WorkflowStep.Sbt(
+    List("${{ matrix.ci }}"),
+    cond = Some(ArmNativeCI),
+    env = ArmNativeEnv
+  ),
+  WorkflowStep.Sbt(
+    List("${{ matrix.ci }}"),
+    cond = Some(NonArmNativeCI)
+  ),
   WorkflowStep.Sbt(
     List("docs/mdoc"),
     cond = Some(

@@ -301,7 +301,14 @@ jobs:
         shell: bash
         run: sbt '++ ${{ matrix.scala }}' 'rootNative/scalafixAll --check'
 
-      - shell: bash
+      - if: matrix.ci == 'ciNative' && matrix.os == 'ubuntu-22.04-arm'
+        env:
+          LLVM_BIN: /usr/lib/llvm-15/bin
+        shell: bash
+        run: sbt '++ ${{ matrix.scala }}' '${{ matrix.ci }}'
+
+      - if: matrix.ci != 'ciNative' || matrix.os != 'ubuntu-22.04-arm'
+        shell: bash
         run: sbt '++ ${{ matrix.scala }}' '${{ matrix.ci }}'
 
       - if: (matrix.scala == '2.13.18' || matrix.scala == '3.3.7') && matrix.ci == 'ciJVM' && matrix.java == 'temurin@17'
