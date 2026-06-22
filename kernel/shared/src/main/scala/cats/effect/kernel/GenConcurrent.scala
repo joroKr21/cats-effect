@@ -293,7 +293,7 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
             case Some(_) => F.unit
             case None =>
               F.race(
-                preempt.get.void,
+                preempt.get.void *> cancelAll,
                 supervision.get.flatMap(_.traverse_(f => f.join.void).onCancel(cancelAll)))
                 .void
           }
