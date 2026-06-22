@@ -172,6 +172,8 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
                 case None =>
                   F.uncancelable { poll =>
                     F.deferred[Outcome[F, E, B]] flatMap { result =>
+                      // acquire the semaphore *before* creating and starting the fiber
+                      // the semaphore gates the traverse, and thus the spawning, not the execution
                       // the laziness is a poor mans defer; this ensures the f gets pushed to the fiber
                       val action = poll(sem.acquire) *> (F.unit >> f(a))
                         .guaranteeCase { oc =>
@@ -192,13 +194,16 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
                               preempt
                                 .complete(Some(e))
                                 .ifM(
-                                  result.complete(oc) <* cancelAll(Some(e)).start,
+                                  // we can't fire-and-forget this one because final results don't block on cancelation
+                                  result.complete(oc) <* cancelAll(Some(e)),
                                   false.pure[F])
 
                             case Outcome.Canceled() =>
                               preempt
                                 .complete(None)
                                 .ifM(
+                                  // we *need* to fire-and-forget this cancelation to avoid deadlock loops when we're already canceling
+                                  // we won't return prematurely because we have a final `onCancel` on the results sequence
                                   result.complete(oc) <* cancelAll(None).start,
                                   false.pure[F])
                           }
