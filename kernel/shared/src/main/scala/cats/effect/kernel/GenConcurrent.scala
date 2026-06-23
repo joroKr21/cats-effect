@@ -205,7 +205,8 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
                                   // we *need* to fire-and-forget this cancelation to avoid deadlock loops when we're already canceling
                                   // we won't return prematurely because we have a final `onCancel` on the results sequence
                                   result.complete(oc) <* cancelAll(None).start,
-                                  false.pure[F])
+                                  false.pure[F]
+                                )
                           }
 
                           completion *> sem.release
