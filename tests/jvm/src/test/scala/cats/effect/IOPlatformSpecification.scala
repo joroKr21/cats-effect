@@ -821,6 +821,16 @@ trait IOPlatformSpecification extends DetectPlatform { self: BaseSpec with Scala
 
           test.attempt.as(ok).timeoutTo(500.millis, IO(false must beTrue))
         }
+
+        "interrupt never on error" in ticked { implicit ticker =>
+          case object TestException extends RuntimeException
+          val test = List(0, 1).parTraverseN(2) {
+            case 0 => IO.never[Unit]
+            case 1 => IO.raiseError(TestException)
+          }
+
+          test.attempt.void.parReplicateA_(100000) must completeAs(())
+        }
       }
 
       "parTraverseN_" >> {
