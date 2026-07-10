@@ -81,7 +81,7 @@ import cats.syntax.all._
  * {{{
  *
  *   F.uncancelable { poll =>
- *     // can only be canceled within `fb`
+ *     // can only be canceled immediately before `fb` is executed, or between combinators in `fb`.
  *     fa *> poll(fb) *> fc
  *   }
  *
@@ -92,16 +92,19 @@ import cats.syntax.all._
  *
  * ==Cancelation Boundaries==
  *
- * A boundary corresponds to an iteration of the internal runloop. In general they are
- * introduced at the start any of the combinators from the Cats/Cats Effect hierarchy (`map`,
- * `flatMap`, `handleErrorWith`, `attempt`, etc).
- *
  * A cancelation boundary is a boundary where the cancelation status of a fiber ''may'' be
- * checked and hence canceled. Cancelation does not have to be checked at every boundary, so it
- * is possible for a fiber to complete after cancelation has been requested, but before it is
- * observed.
+ * checked and hence canceled. Cancelation is advisory. It does not have to be checked at every
+ * boundary, so it is possible for a fiber to complete after cancelation has been requested, but
+ * before it is observed.
  *
- * Outside `uncancelable` cancelation may be observed before the invocation of any combinator:
+ * In general they are introduced before each of the combinators from the Cats/Cats Effect
+ * hierarchy (`map`, `flatMap`, `handleErrorWith`, `attempt`, etc). Typeclasses which extend
+ * `MonadCancel` may introduce additional cancelation boundaries with their combinators.
+ * Importantly, there will never be a cancelation boundary after a combinator, as this would
+ * allow cancelation between the end of a poll and the next action, losing the result of the
+ * polled operation.
+ *
+ * Outside `uncancelable` cancelation may be observed at any cancelation boundary:
  *
  * {{{
  *   /* boundary */
@@ -114,8 +117,8 @@ import cats.syntax.all._
  * }}}
  *
  * If cancelation of the fiber above is requested then the cancelation status may be checked and
- * the execution terminated between any of the combinators or before the first combinator is
- * executed, or it may not be observed at all before the fiber completes.
+ * the execution terminated before each combinator is executed, or it may not be observed at all
+ * before the fiber completes.
  *
  * Inside `uncancelable`, the observation of cancelation at boundaries outside of `poll` is
  * suppressed. This is the definition of masking as above.
@@ -138,7 +141,7 @@ import cats.syntax.all._
  *   1. between any combinators that `g` is composed of.
  *
  * Since uncancelable regions compose, if `uncancelable` is called within `g`, the observation
- * of cancelation will again be suspended until after that block. Cancelation will ''not'' be
+ * of cancelation will again be suppressed until after that block. Cancelation will ''not'' be
  * observed ''after'' `g` completes
  *
  * ==Finalization==
@@ -225,8 +228,8 @@ trait MonadCancel[F[_], E] extends MonadError[F, E] {
    * natural transformation `F ~> F` that enables polling. Polling causes a fiber to unmask
    * within a masked region so that cancelation can be observed again.
    *
-   * In the following `uncancelable` block, cancelation can be observed only within `fb` and
-   * nowhere else:
+   * In the following `uncancelable` block, cancelation can only be observed immediately before
+   * `fb` inside the poll or between combinators it is composed from:
    *
    * {{{
    *
