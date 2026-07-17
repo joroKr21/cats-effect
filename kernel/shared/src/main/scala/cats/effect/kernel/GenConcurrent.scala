@@ -217,11 +217,18 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
 
                       action flatMap { fiber =>
                         supervision.update(_ + ((fiber, result))) map { _ =>
-                          result
-                            .get
-                            .flatMap(_.embed(F.canceled *> F.never))
-                            .onCancel(fiber.cancel)
-                            .guarantee(supervision.update(_ - ((fiber, result))))
+                          // double-check to catch situations where preemption happens after check before supervision
+                          preempt.tryGet flatMap {
+                            case Some(Some(e)) => fiber.cancel *> F.raiseError[B](e)
+                            case Some(None) => fiber.cancel *> F.canceled *> F.never[B]
+
+                            case None =>
+                              result
+                                .get
+                                .flatMap(_.embed(F.canceled *> F.never))
+                                .onCancel(fiber.cancel)
+                                .guarantee(supervision.update(_ - ((fiber, result))))
+                          }
                         }
                       }
                     }
