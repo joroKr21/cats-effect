@@ -159,7 +159,7 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
 
             states.toList parTraverse_ {
               case (fiber, result) =>
-                result.complete(causeOC) *> fiber.cancel
+                result.complete(causeOC).ifM(fiber.cancel, F.unit)
             }
           }
 
