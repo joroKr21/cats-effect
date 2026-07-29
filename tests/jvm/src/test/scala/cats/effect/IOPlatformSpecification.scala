@@ -824,9 +824,7 @@ trait IOPlatformSpecification extends DetectPlatform { self: BaseSpec with Scala
 
         "interrupt on errors" in ticked { implicit ticker =>
           case object TestException extends RuntimeException
-          val test = (0 to 10).toList.parTraverseN(2) { _ =>
-            IO.raiseError(TestException)
-          }
+          val test = (0 to 10).toList.parTraverseN(2) { _ => IO.raiseError(TestException) }
 
           test.attempt.void.parReplicateA_(100000) must completeAs(())
         }
