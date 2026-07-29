@@ -227,8 +227,10 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
                                 result
                                   .get
                                   .flatMap(_.embed(F.canceled *> F.never))
-                                  .onCancel(fiber.cancel)
-                                  .guarantee(supervision.update(_ - ((fiber, result)))))
+                                  .guaranteeCase {
+                                    case Outcome.Canceled() => F.unit
+                                    case _ => supervision.update(_ - ((fiber, result)))
+                                  })
                           }
                       }
                     }

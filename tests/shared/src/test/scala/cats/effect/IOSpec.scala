@@ -1692,6 +1692,40 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
         p must completeAs(true)
       }
 
+      "cancel workers in parallel when externally canceled" in ticked { implicit ticker =>
+        val test = for {
+          firstStarted <- IO.deferred[Unit]
+          secondStarted <- IO.deferred[Unit]
+          firstCanceling <- IO.deferred[Unit]
+          secondCanceling <- IO.deferred[Unit]
+          firstFinalized <- IO.deferred[Unit]
+          secondFinalized <- IO.deferred[Unit]
+          fiber <- List(1, 2)
+            .parTraverseN(2) {
+              case 1 =>
+                (firstStarted.complete(()).void *> IO.never[Int]).onCancel(
+                  firstCanceling.complete(()).void *>
+                    secondCanceling.get *>
+                    firstFinalized.complete(()).void)
+              case 2 =>
+                (secondStarted.complete(()).void *> IO.never[Int]).onCancel(
+                  secondCanceling.complete(()).void *>
+                    firstCanceling.get *>
+                    secondFinalized.complete(()).void)
+            }
+            .start
+          _ <- firstStarted.get
+          _ <- secondStarted.get
+          _ <- IO.sleep(1.millis)
+          _ <- fiber.cancel
+          outcome <- fiber.join
+          first <- firstFinalized.tryGet
+          second <- secondFinalized.tryGet
+        } yield (outcome.isCanceled, first.nonEmpty, second.nonEmpty)
+
+        test must completeAs((true, true, true))
+      }
+
       "propagate self-cancellation" in ticked { implicit ticker =>
         List(1, 2, 3, 4)
           .parTraverseN(2) { (n: Int) =>
