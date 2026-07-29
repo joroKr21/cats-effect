@@ -290,8 +290,8 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
                       preempt.complete(None).void
                   }
 
-                  // only release the semaphore if we *haven't* errored
-                  val suppressed = wrapped.void.voidError *> sem.release
+                  // release the semaphore after every possible outcome
+                  val suppressed = wrapped.void.voidError.guarantee(sem.release)
 
                   poll(sem.acquire) *> suppressed.start flatMap { fiber =>
                     // supervision is handled very differently here: we never remove from the set

@@ -1936,6 +1936,31 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
           .void must selfCancel
       }
 
+      "not deadlock when the first task self-cancels at concurrency one" in ticked {
+        implicit ticker =>
+          val test = for {
+            firstStarted <- IO.deferred[Unit]
+            allowCancel <- IO.deferred[Unit]
+            fiber <- List(1, 2)
+              .parTraverseN_(1) {
+                case 1 =>
+                  firstStarted.complete(()).void *>
+                    allowCancel.get *>
+                    IO.canceled *>
+                    IO.never
+                case 2 =>
+                  IO.unit
+              }
+              .start
+            _ <- firstStarted.get
+            _ <- IO.sleep(1.millis)
+            _ <- allowCancel.complete(())
+            outcome <- fiber.join
+          } yield outcome.isCanceled
+
+          test must completeAs(true)
+      }
+
       "run finalizers when a task self-cancels" in ticked { implicit ticker =>
         val p = for {
           r <- IO.ref(0)
