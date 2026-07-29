@@ -1755,6 +1755,74 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
         p must completeAs(true)
       }
 
+      "wait for sibling finalizers after a task self-cancels" in ticked { implicit ticker =>
+        val test = for {
+          events <- IO.ref(Vector.empty[String])
+          firstStarted <- IO.deferred[Unit]
+          secondStarted <- IO.deferred[Unit]
+          cancelerStarted <- IO.deferred[Unit]
+          allowSelfCancel <- IO.deferred[Unit]
+          firstCanceling <- IO.deferred[Unit]
+          secondCanceling <- IO.deferred[Unit]
+          releaseFinalizers <- IO.deferred[Unit]
+          firstFinalized <- IO.deferred[Unit]
+          secondFinalized <- IO.deferred[Unit]
+          outcome <- IO.deferred[Outcome[IO, Throwable, List[Int]]]
+          traversal <- List(1, 2, 3)
+            .parTraverseN(3) {
+              case 1 =>
+                (firstStarted.complete(()).void *> IO.never[Int]).onCancel(
+                  firstCanceling.complete(()).void *>
+                    releaseFinalizers.get *>
+                    events.update(_ :+ "first-finalized") *>
+                    firstFinalized.complete(()).void)
+              case 2 =>
+                (secondStarted.complete(()).void *> IO.never[Int]).onCancel(
+                  secondCanceling.complete(()).void *>
+                    releaseFinalizers.get *>
+                    events.update(_ :+ "second-finalized") *>
+                    secondFinalized.complete(()).void)
+              case 3 =>
+                cancelerStarted.complete(()).void *>
+                  allowSelfCancel.get *>
+                  IO.canceled *>
+                  IO.never
+            }
+            .start
+          _ <- traversal
+            .join
+            .flatMap { oc =>
+              events.update(_ :+ "outcome") *>
+                outcome.complete(oc).void
+            }
+            .start
+          _ <- firstStarted.get
+          _ <- secondStarted.get
+          _ <- cancelerStarted.get
+          _ <- IO.sleep(1.millis)
+          _ <- allowSelfCancel.complete(())
+          _ <- firstCanceling.get
+          _ <- secondCanceling.get
+          _ <- IO.sleep(1.millis)
+          beforeRelease <- events.get
+          _ <- releaseFinalizers.complete(())
+          published <- outcome.get
+          _ <- firstFinalized.get
+          _ <- secondFinalized.get
+          observed <- events.get
+        } yield {
+          val finalizersBeforeOutcome = observed match {
+            case Vector(first, second, "outcome") =>
+              Set(first, second) == Set("first-finalized", "second-finalized")
+            case _ => false
+          }
+
+          (beforeRelease.isEmpty, published.isCanceled, finalizersBeforeOutcome)
+        }
+
+        test must completeAs((true, true, true))
+      }
+
       "not run more than `n` tasks at a time" in real {
         def task(counter: Ref[IO, Int], maximum: Ref[IO, Int]): IO[Unit] = {
           val acq = counter.updateAndGet(_ + 1).flatMap { count =>

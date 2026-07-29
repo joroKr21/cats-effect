@@ -163,6 +163,12 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
             }
           }
 
+          def cancelAllOrJoin(cause: Option[E]) =
+            preempt.complete(cause).ifM(cancelAll(cause), F.unit) *>
+              supervision
+                .get
+                .flatMap(_.toList.parTraverse_ { case (fiber, _) => fiber.join.void })
+
           MiniSemaphore[F](n) flatMap { sem =>
             val results = ta traverse { a =>
               preempt.tryGet flatMap {
@@ -203,7 +209,7 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
                                 .complete(None)
                                 .ifM(
                                   // we *need* to fire-and-forget this cancelation to avoid deadlock loops when we're already canceling
-                                  // we won't return prematurely because we have a final `onCancel` on the results sequence
+                                  // the final `onCancel` on the results sequence joins the supervised fibers
                                   result.complete(oc) <* cancelAll(None).start,
                                   false.pure[F]
                                 )
@@ -238,7 +244,7 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
               }
             }
 
-            results.flatMap(_.sequence).onCancel(cancelAll(None))
+            results.flatMap(_.sequence).onCancel(cancelAllOrJoin(None))
           }
       }
     }
