@@ -1604,6 +1604,51 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
           .mustFailWith[RuntimeException]
       }
 
+      "not leave a worker started after error preemption running" in ticked { implicit ticker =>
+        case object TestException extends RuntimeException
+
+        val test = for {
+          errorReady <- IO.deferred[Unit]
+          allowError <- IO.deferred[Unit]
+          events <- IO.ref(Vector.empty[String])
+          releaseLate <- IO.deferred[Unit]
+          fiber <- List(1, 2, 3)
+            .parTraverseN(2) {
+              case 1 =>
+                IO.never[Int]
+              case 2 =>
+                errorReady.complete(()).void *>
+                  allowError.get *>
+                  IO.raiseError[Int](TestException)
+              case 3 =>
+                (events.update(_ :+ "started") *> releaseLate.get.as(3)).onCancel(
+                  IO.sleep(1.millis) *> events.update(_ :+ "canceled"))
+            }
+            .attempt
+            .flatTap(_ => events.update(_ :+ "outcome"))
+            .start
+          _ <- errorReady.get
+          _ <- IO.sleep(1.millis)
+          _ <- allowError.complete(())
+          outcome <- fiber.joinWithNever
+          _ <- releaseLate.complete(())
+          _ <- IO.sleep(2.millis)
+          observed <- events.get
+        } yield {
+          val exactError = outcome match {
+            case Left(error) => error eq TestException
+            case Right(_) => false
+          }
+          val workerAccountedFor =
+            observed == Vector("outcome") ||
+              observed == Vector("started", "canceled", "outcome")
+
+          (exactError, workerAccountedFor)
+        }
+
+        test must completeAs((true, true))
+      }
+
       "be cancelable" in ticked { implicit ticker =>
         val p = for {
           f <- List(1, 2, 3).parTraverseN(2)(_ => IO.never).start
@@ -1794,6 +1839,49 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
             if (n == 2) IO.raiseError(new RuntimeException) else n.pure[IO]
           }
           .mustFailWith[RuntimeException]
+      }
+
+      "not leave a worker started after error preemption running" in ticked { implicit ticker =>
+        case object TestException extends RuntimeException
+
+        val test = for {
+          errorReady <- IO.deferred[Unit]
+          allowError <- IO.deferred[Unit]
+          events <- IO.ref(Vector.empty[String])
+          releaseLate <- IO.deferred[Unit]
+          fiber <- List(1, 2)
+            .parTraverseN_(1) {
+              case 1 =>
+                errorReady.complete(()).void *>
+                  allowError.get *>
+                  IO.raiseError[Unit](TestException)
+              case 2 =>
+                (events.update(_ :+ "started") *> releaseLate.get).onCancel(
+                  IO.sleep(1.millis) *> events.update(_ :+ "canceled"))
+            }
+            .attempt
+            .flatTap(_ => events.update(_ :+ "outcome"))
+            .start
+          _ <- errorReady.get
+          _ <- IO.sleep(1.millis)
+          _ <- allowError.complete(())
+          outcome <- fiber.joinWithNever
+          _ <- releaseLate.complete(())
+          _ <- IO.sleep(2.millis)
+          observed <- events.get
+        } yield {
+          val exactError = outcome match {
+            case Left(error) => error eq TestException
+            case Right(_) => false
+          }
+          val workerAccountedFor =
+            observed == Vector("outcome") ||
+              observed == Vector("started", "canceled", "outcome")
+
+          (exactError, workerAccountedFor)
+        }
+
+        test must completeAs((true, true))
       }
 
       "be cancelable" in ticked { implicit ticker =>
