@@ -163,11 +163,9 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
             }
           }
 
-          def cancelAllOrJoin(cause: Option[E]) =
-            preempt.complete(cause).ifM(cancelAll(cause), F.unit) *>
-              supervision
-                .get
-                .flatMap(_.toList.parTraverse_ { case (fiber, _) => fiber.join.void })
+          def cancelAllAndJoin =
+            preempt.complete(None).ifM(cancelAll(None), F.unit) *>
+              supervision.get.flatMap(_.toList.traverse_ { case (fiber, _) => fiber.join.void })
 
           MiniSemaphore[F](n) flatMap { sem =>
             val results = ta traverse { a =>
@@ -244,7 +242,7 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
               }
             }
 
-            results.flatMap(_.sequence).onCancel(cancelAllOrJoin(None))
+            results.flatMap(_.sequence).onCancel(cancelAllAndJoin)
           }
       }
     }
