@@ -252,8 +252,8 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
    * Like `Parallel.parTraverse_`, but limits the degree of parallelism. The semantics of this
    * function are ordered based on the `Foldable`. The first ''n'' actions will be started
    * first, with subsequent actions starting in order as each one completes. Actions which are
-   * reached earlier in `foldLeftM` order will be started slightly sooner than later actions, in
-   * a non-blocking fashion. Any errors or self-cancelation will immediately abort the sequence.
+   * reached earlier in `traverse_` order will be started slightly before later actions, in a
+   * non-blocking fashion. Any errors or self-cancelation will immediately abort the sequence.
    * If multiple actions produce errors simultaneously, one of them will be nondeterministically
    * selected for production.
    *
@@ -266,7 +266,7 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
     implicit val F: GenConcurrent[F, E] = this
 
     F.deferred[Option[E]] flatMap { preempt =>
-      F.ref[List[Fiber[F, ?, ?]]](Nil) flatMap { supervision =>
+      F.ref[List[Fiber[F, E, Unit]]](Nil) flatMap { supervision =>
         MiniSemaphore[F](n) flatMap { sem =>
           val cancelAll = supervision.get.flatMap(_.parTraverse_(_.cancel))
 
@@ -326,7 +326,8 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
 
           val work = (startAll *> awaitAll) guaranteeCase {
             case Outcome.Succeeded(_) => F.unit
-            case Outcome.Errored(_) | Outcome.Canceled() => preempt.complete(None) *> cancelAll
+            case Outcome.Errored(e) => preempt.complete(Some(e)) *> cancelAll
+            case Outcome.Canceled() => preempt.complete(None) *> cancelAll
           }
 
           F.uncancelable(poll => poll(work) *> resurface(poll))
