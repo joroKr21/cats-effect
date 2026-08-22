@@ -27,10 +27,9 @@ import scala.collection.immutable.{Queue => ScalaQueue}
  * A cut-down version of semaphore used to implement parTraverseN
  */
 private[kernel] abstract class MiniSemaphore[F[_]] extends Serializable {
+  def acquire: F[Unit]
+  def release: F[Unit]
 
-  /**
-   * Sequence an action while holding a permit
-   */
   def withPermit[A](fa: F[A]): F[A]
 }
 

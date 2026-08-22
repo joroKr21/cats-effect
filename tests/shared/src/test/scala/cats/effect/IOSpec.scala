@@ -1604,6 +1604,51 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
           .mustFailWith[RuntimeException]
       }
 
+      "not leave a worker started after error preemption running" in ticked { implicit ticker =>
+        case object TestException extends RuntimeException
+
+        val test = for {
+          errorReady <- IO.deferred[Unit]
+          allowError <- IO.deferred[Unit]
+          events <- IO.ref(Vector.empty[String])
+          releaseLate <- IO.deferred[Unit]
+          fiber <- List(1, 2, 3)
+            .parTraverseN(2) {
+              case 1 =>
+                IO.never[Int]
+              case 2 =>
+                errorReady.complete(()).void *>
+                  allowError.get *>
+                  IO.raiseError[Int](TestException)
+              case 3 =>
+                (events.update(_ :+ "started") *> releaseLate.get.as(3)).onCancel(
+                  IO.sleep(1.millis) *> events.update(_ :+ "canceled"))
+            }
+            .attempt
+            .flatTap(_ => events.update(_ :+ "outcome"))
+            .start
+          _ <- errorReady.get
+          _ <- IO.sleep(1.millis)
+          _ <- allowError.complete(())
+          outcome <- fiber.joinWithNever
+          _ <- releaseLate.complete(())
+          _ <- IO.sleep(2.millis)
+          observed <- events.get
+        } yield {
+          val exactError = outcome match {
+            case Left(error) => error eq TestException
+            case Right(_) => false
+          }
+          val workerAccountedFor =
+            observed == Vector("outcome") ||
+              observed == Vector("started", "canceled", "outcome")
+
+          (exactError, workerAccountedFor)
+        }
+
+        test must completeAs((true, true))
+      }
+
       "be cancelable" in ticked { implicit ticker =>
         val p = for {
           f <- List(1, 2, 3).parTraverseN(2)(_ => IO.never).start
@@ -1614,6 +1659,272 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
         p must completeAs(true)
       }
 
+      "run finalizers when canceled" in ticked { implicit ticker =>
+        val p = for {
+          r <- IO.ref(0)
+
+          /*
+           * The exact series of steps here is:
+           *
+           * List(IO.never.onCancel, IO.unit, IO.never.onCancel)
+           *
+           * This is significant because we're limiting the parallelism to
+           * 2, meaning that we will hit a wall after IO.unit. HOWEVER,
+           * IO.unit completes immediately, so this test not only checks
+           * cancelation, it also tests that we move onto the third item
+           * after the second one completes even while the first is blocked.
+           * In other words, it's testing both cancelation and head of line
+           * behavior.
+           */
+          f <- List(1, 2, 3)
+            .parTraverseN(2) { i =>
+              if (i == 2) IO.unit
+              else IO.never.onCancel(r.update(_ + 1))
+            }
+            .start
+
+          _ <- IO.sleep(100.millis)
+          _ <- f.cancel
+          c <- r.get
+          _ <- IO { c mustEqual 2 }
+        } yield true
+
+        p must completeAs(true)
+      }
+
+      "cancel workers in parallel when externally canceled" in ticked { implicit ticker =>
+        val test = for {
+          firstStarted <- IO.deferred[Unit]
+          secondStarted <- IO.deferred[Unit]
+          firstCanceling <- IO.deferred[Unit]
+          secondCanceling <- IO.deferred[Unit]
+          firstFinalized <- IO.deferred[Unit]
+          secondFinalized <- IO.deferred[Unit]
+          fiber <- List(1, 2)
+            .parTraverseN(2) {
+              case 1 =>
+                (firstStarted.complete(()).void *> IO.never[Int]).onCancel(
+                  firstCanceling.complete(()).void *>
+                    secondCanceling.get *>
+                    firstFinalized.complete(()).void)
+              case 2 =>
+                (secondStarted.complete(()).void *> IO.never[Int]).onCancel(
+                  secondCanceling.complete(()).void *>
+                    firstCanceling.get *>
+                    secondFinalized.complete(()).void)
+            }
+            .start
+          _ <- firstStarted.get
+          _ <- secondStarted.get
+          _ <- IO.sleep(1.millis)
+          _ <- fiber.cancel
+          outcome <- fiber.join
+          first <- firstFinalized.tryGet
+          second <- secondFinalized.tryGet
+        } yield (outcome.isCanceled, first.nonEmpty, second.nonEmpty)
+
+        test must completeAs((true, true, true))
+      }
+
+      "propagate self-cancellation" in ticked { implicit ticker =>
+        List(1, 2, 3, 4)
+          .parTraverseN(2) { (n: Int) =>
+            if (n == 3) IO.canceled *> IO.never
+            else IO.pure(n)
+          }
+          .void must selfCancel
+      }
+
+      "run finalizers when a task self-cancels" in ticked { implicit ticker =>
+        val p = for {
+          r <- IO.ref(0)
+          fib <- List(1, 2, 3, 4)
+            .parTraverseN(2) { (n: Int) =>
+              if (n == 3) IO.canceled *> IO.never
+              else IO.pure(n)
+            }
+            .onCancel(r.update(_ + 1))
+            .void
+            .start
+          _ <- IO.sleep(100.millis)
+          c <- r.get
+          _ <- IO { c mustEqual 1 }
+          oc <- fib.join
+        } yield oc.isCanceled
+
+        p must completeAs(true)
+      }
+
+      "wait for sibling finalizers after a task self-cancels" in ticked { implicit ticker =>
+        val test = for {
+          events <- IO.ref(Vector.empty[String])
+          firstStarted <- IO.deferred[Unit]
+          secondStarted <- IO.deferred[Unit]
+          cancelerStarted <- IO.deferred[Unit]
+          allowSelfCancel <- IO.deferred[Unit]
+          firstCanceling <- IO.deferred[Unit]
+          secondCanceling <- IO.deferred[Unit]
+          releaseFinalizers <- IO.deferred[Unit]
+          firstFinalized <- IO.deferred[Unit]
+          secondFinalized <- IO.deferred[Unit]
+          outcome <- IO.deferred[Outcome[IO, Throwable, List[Int]]]
+          traversal <- List(1, 2, 3)
+            .parTraverseN(3) {
+              case 1 =>
+                (firstStarted.complete(()).void *> IO.never[Int]).onCancel(
+                  firstCanceling.complete(()).void *>
+                    releaseFinalizers.get *>
+                    events.update(_ :+ "first-finalized") *>
+                    firstFinalized.complete(()).void)
+              case 2 =>
+                (secondStarted.complete(()).void *> IO.never[Int]).onCancel(
+                  secondCanceling.complete(()).void *>
+                    releaseFinalizers.get *>
+                    events.update(_ :+ "second-finalized") *>
+                    secondFinalized.complete(()).void)
+              case 3 =>
+                cancelerStarted.complete(()).void *>
+                  allowSelfCancel.get *>
+                  IO.canceled *>
+                  IO.never
+            }
+            .start
+          _ <- traversal
+            .join
+            .flatMap { oc =>
+              events.update(_ :+ "outcome") *>
+                outcome.complete(oc).void
+            }
+            .start
+          _ <- firstStarted.get
+          _ <- secondStarted.get
+          _ <- cancelerStarted.get
+          _ <- IO.sleep(1.millis)
+          _ <- allowSelfCancel.complete(())
+          _ <- firstCanceling.get
+          _ <- secondCanceling.get
+          _ <- IO.sleep(1.millis)
+          beforeRelease <- events.get
+          _ <- releaseFinalizers.complete(())
+          published <- outcome.get
+          _ <- firstFinalized.get
+          _ <- secondFinalized.get
+          observed <- events.get
+        } yield {
+          val finalizersBeforeOutcome = observed match {
+            case Vector(first, second, "outcome") =>
+              Set(first, second) == Set("first-finalized", "second-finalized")
+            case _ => false
+          }
+
+          (beforeRelease.isEmpty, published.isCanceled, finalizersBeforeOutcome)
+        }
+
+        test must completeAs((true, true, true))
+      }
+
+      "not run more than `n` tasks at a time" in real {
+        def task(counter: Ref[IO, Int], maximum: Ref[IO, Int]): IO[Unit] = {
+          val acq = counter.updateAndGet(_ + 1).flatMap { count =>
+            maximum.update { max => if (count > max) count else max }
+          }
+          IO.asyncForIO.bracket(acq) { _ => IO.sleep(100.millis) }(_ => counter.update(_ - 1))
+        }
+
+        for {
+          maximum <- Ref.of[IO, Int](0)
+          counter <- Ref.of[IO, Int](0)
+          nCpu <- IO { Runtime.getRuntime().availableProcessors() }
+          n = java.lang.Math.max(nCpu, 2)
+          size = 4 * n
+          res <- (1 to size).toList.parTraverseN(n) { _ => task(counter, maximum) }
+          _ <- IO { res.size mustEqual size }
+          count <- counter.get
+          _ <- IO { count mustEqual 0 }
+          max <- maximum.get
+          _ <- IO { max must beLessThanOrEqualTo(n) }
+        } yield ok
+      }
+
+      "run actually in parallel" in real {
+        val n = 4
+        (1 to 2 * n)
+          .toList
+          .map { i => IO.sleep(1.second).as(i) }
+          .parSequenceN(n)
+          .timeout(3.seconds)
+          .flatMap { res => IO { res mustEqual (1 to 2 * n).toList } }
+      }
+
+      "work for empty traverse" in ticked { implicit ticker =>
+        List.empty[Int].parTraverseN(4) { _ => IO.never[String] } must completeAs(
+          List.empty[String])
+      }
+
+      "work for non-empty traverse (ticked)" in ticked { implicit ticker =>
+        List(1).parTraverseN(4) { i => IO.pure(i.toString) } must completeAs(List("1"))
+        List(1, 2).parTraverseN(3) { i => IO.pure(i.toString) } must completeAs(List("1", "2"))
+        List(1, 2, 3).parTraverseN(2) { i => IO.pure(i.toString) } must completeAs(
+          List("1", "2", "3"))
+        List(1, 2, 3, 4).parTraverseN(1) { i => IO.pure(i.toString) } must completeAs(
+          List("1", "2", "3", "4"))
+      }
+
+      "work for non-empty traverse (real)" in real {
+        for {
+          _ <- List(1).parTraverseN(4)(i => IO.pure(i.toString)).flatMap { r =>
+            IO(r mustEqual List("1"))
+          }
+          _ <- List(1, 2).parTraverseN(3)(i => IO.pure(i.toString)).flatMap { r =>
+            IO(r mustEqual List("1", "2"))
+          }
+          _ <- List(1, 2, 3).parTraverseN(2)(i => IO.pure(i.toString)).flatMap { r =>
+            IO(r mustEqual List("1", "2", "3"))
+          }
+          _ <- List(1, 2, 3, 4).parTraverseN(1)(i => IO.pure(i.toString)).flatMap { r =>
+            IO(r mustEqual List("1", "2", "3", "4"))
+          }
+          _ <- (1 to 10000).toList.parTraverseN(2)(i => IO.pure(i.toString)).flatMap { r =>
+            IO(r mustEqual (1 to 10000).map(_.toString).toList)
+          }
+        } yield ok
+      }
+
+      "be null-safe" in real {
+        for {
+          r1 <- List[String]("a", "b", null, "d", null).parTraverseN(2) {
+            case "a" => IO.pure(null)
+            case "b" => IO.pure("x")
+            case "d" => IO.pure(null)
+            case null => IO.pure("z")
+          }
+          _ <- IO { r1 mustEqual List(null, "x", "z", null, "z") }
+        } yield ok
+      }
+
+      "run finalizers in parallel" in ticked { implicit ticker =>
+        // this test also tests to ensure that we get the errored results rather than cancels
+        // note that the first two effects will have a Canceled outcome, while the third is Errored
+        // if we just go by first wins in sequence, then Canceled is the (incorrect) result
+        // first wins *in time* is the expected semantic here
+        val test = for {
+          latch1 <- IO.deferred[Unit]
+          latch2 <- IO.deferred[Unit]
+
+          _ <- List(1, 2, 3).parTraverseN(3) {
+            case 1 =>
+              IO.never.onCancel(latch1.complete(()) *> latch2.get)
+
+            case 2 =>
+              IO.never.onCancel(latch2.complete(()) *> latch1.get)
+
+            case 3 =>
+              IO.sleep(10.millis) *> IO.raiseError(new RuntimeException)
+          }
+        } yield ()
+
+        test.attempt.void must completeAs(())
+      }
     }
 
     "parTraverseN_" should {
@@ -1632,6 +1943,49 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
           .mustFailWith[RuntimeException]
       }
 
+      "not leave a worker started after error preemption running" in ticked { implicit ticker =>
+        case object TestException extends RuntimeException
+
+        val test = for {
+          errorReady <- IO.deferred[Unit]
+          allowError <- IO.deferred[Unit]
+          events <- IO.ref(Vector.empty[String])
+          releaseLate <- IO.deferred[Unit]
+          fiber <- List(1, 2)
+            .parTraverseN_(1) {
+              case 1 =>
+                errorReady.complete(()).void *>
+                  allowError.get *>
+                  IO.raiseError[Unit](TestException)
+              case 2 =>
+                (events.update(_ :+ "started") *> releaseLate.get).onCancel(
+                  IO.sleep(1.millis) *> events.update(_ :+ "canceled"))
+            }
+            .attempt
+            .flatTap(_ => events.update(_ :+ "outcome"))
+            .start
+          _ <- errorReady.get
+          _ <- IO.sleep(1.millis)
+          _ <- allowError.complete(())
+          outcome <- fiber.joinWithNever
+          _ <- releaseLate.complete(())
+          _ <- IO.sleep(2.millis)
+          observed <- events.get
+        } yield {
+          val exactError = outcome match {
+            case Left(error) => error eq TestException
+            case Right(_) => false
+          }
+          val workerAccountedFor =
+            observed == Vector("outcome") ||
+              observed == Vector("started", "canceled", "outcome")
+
+          (exactError, workerAccountedFor)
+        }
+
+        test must completeAs((true, true))
+      }
+
       "be cancelable" in ticked { implicit ticker =>
         val p = for {
           f <- List(1, 2, 3).parTraverseN_(2)(_ => IO.never).start
@@ -1642,6 +1996,234 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
         p must completeAs(true)
       }
 
+      "run finalizers when canceled" in ticked { implicit ticker =>
+        val p = for {
+          r <- IO.ref(0)
+
+          /*
+           * The exact series of steps here is:
+           *
+           * List(IO.never.onCancel, IO.unit, IO.never.onCancel)
+           *
+           * This is significant because we're limiting the parallelism to
+           * 2, meaning that we will hit a wall after IO.unit. HOWEVER,
+           * IO.unit completes immediately, so this test not only checks
+           * cancelation, it also tests that we move onto the third item
+           * after the second one completes even while the first is blocked.
+           * In other words, it's testing both cancelation and head of line
+           * behavior.
+           */
+          f <- List(1, 2, 3)
+            .parTraverseN_(2) { i =>
+              if (i == 2) IO.unit
+              else IO.never.onCancel(r.update(_ + 1))
+            }
+            .start
+
+          _ <- IO.sleep(100.millis)
+          _ <- f.cancel
+          c <- r.get
+          _ <- IO { c mustEqual 2 }
+        } yield true
+
+        p must completeAs(true)
+      }
+
+      "propagate self-cancellation" in ticked { implicit ticker =>
+        List(1, 2, 3, 4)
+          .parTraverseN_(2) { (n: Int) =>
+            if (n == 3) IO.canceled *> IO.never
+            else IO.pure(n)
+          }
+          .void must selfCancel
+      }
+
+      "not deadlock when the first task self-cancels at concurrency one" in ticked {
+        implicit ticker =>
+          val test = for {
+            firstStarted <- IO.deferred[Unit]
+            allowCancel <- IO.deferred[Unit]
+            fiber <- List(1, 2)
+              .parTraverseN_(1) {
+                case 1 =>
+                  firstStarted.complete(()).void *>
+                    allowCancel.get *>
+                    IO.canceled *>
+                    IO.never
+                case 2 =>
+                  IO.unit
+              }
+              .start
+            _ <- firstStarted.get
+            _ <- IO.sleep(1.millis)
+            _ <- allowCancel.complete(())
+            outcome <- fiber.join
+          } yield outcome.isCanceled
+
+          test must completeAs(true)
+      }
+
+      "run finalizers when a task self-cancels" in ticked { implicit ticker =>
+        val p = for {
+          r <- IO.ref(0)
+          fib <- List(1, 2, 3, 4)
+            .parTraverseN_(2) { (n: Int) =>
+              if (n == 3) IO.canceled *> IO.never
+              else IO.pure(n)
+            }
+            .onCancel(r.update(_ + 1))
+            .void
+            .start
+          _ <- IO.sleep(100.millis)
+          c <- r.get
+          _ <- IO { c mustEqual 1 }
+          oc <- fib.join
+        } yield oc.isCanceled
+
+        p must completeAs(true)
+      }
+
+      "run finalizers when a task self-cancels after everything started" in ticked {
+        implicit ticker =>
+          val p = for {
+            ds <- IO.deferred[Unit].replicateA(3)
+            f <- ds
+              .parTraverseN_(4) { d =>
+                (if (d eq ds(1)) IO.sleep(100.millis) *> IO.canceled
+                 else IO.never).onCancel(d.complete(()).void)
+              }
+              .start
+            _ <- IO.sleep(50.millis) // all 3 fibers start (limit is 4)
+            oc <- f.join // after another 50ms, one of them self-cancels
+            _ <- IO { oc.isCanceled mustEqual true }
+            _ <- ds.traverse_(
+              _.get
+            ) // every finalizer must've ran, so every Deferred must be completed
+          } yield true
+
+          p must completeAs(true)
+      }
+
+      "run finalizers when a task errors after everything started" in ticked {
+        implicit ticker =>
+          val p = for {
+            ds <- IO.deferred[Unit].replicateA(3)
+            f <- ds
+              .parTraverseN_(4) { d =>
+                (if (d eq ds(1)) IO.sleep(100.millis) *> IO.raiseError(new Exception)
+                 else IO.never).guarantee(d.complete(()).void)
+              }
+              .start
+            _ <- IO.sleep(50.millis) // all 3 fibers start (limit is 4)
+            oc <- f.join // after another 50ms, one of them errors
+            _ <- IO { oc.isError mustEqual true }
+            _ <- ds.traverse_(
+              _.get
+            ) // every finalizer must've ran, so every Deferred must be completed
+          } yield true
+
+          p must completeAs(true)
+      }
+
+      "not run more than `n` tasks at a time" in real {
+        def task(counter: Ref[IO, Int], maximum: Ref[IO, Int]): IO[Unit] = {
+          val acq = counter.updateAndGet(_ + 1).flatMap { count =>
+            maximum.update { max => if (count > max) count else max }
+          }
+          IO.asyncForIO.bracket(acq) { _ => IO.sleep(100.millis) }(_ => counter.update(_ - 1))
+        }
+
+        for {
+          maximum <- Ref.of[IO, Int](0)
+          counter <- Ref.of[IO, Int](0)
+          nCpu <- IO { Runtime.getRuntime().availableProcessors() }
+          n = java.lang.Math.max(nCpu, 2)
+          size = 4 * n
+          _ <- (1 to size).toList.parTraverseN_(n) { _ => task(counter, maximum) }
+          count <- counter.get
+          _ <- IO { count mustEqual 0 }
+          max <- maximum.get
+          _ <- IO { max must beLessThanOrEqualTo(n) }
+        } yield ok
+      }
+
+      "run actually in parallel" in real {
+        val n = 4
+        (1 to 2 * n)
+          .toList
+          .map(_ => IO.sleep(1.second))
+          .parSequenceN_(n)
+          .as(true)
+          .timeoutTo(3.seconds, IO.pure(false))
+          .flatMap(res => IO { res must beTrue })
+      }
+
+      "work for empty traverse" in ticked { implicit ticker =>
+        List.empty[Int].parTraverseN_(4) { _ => IO.never[String] } must completeAs(())
+      }
+
+      "work for non-empty traverse (ticked)" in ticked { implicit ticker =>
+        List(1).parTraverseN_(4) { i => IO.pure(i.toString) } must completeAs(())
+        List(1, 2).parTraverseN_(3) { i => IO.pure(i.toString) } must completeAs(())
+        List(1, 2, 3).parTraverseN_(2) { i => IO.pure(i.toString) } must completeAs(())
+        List(1, 2, 3, 4).parTraverseN_(1) { i => IO.pure(i.toString) } must completeAs(())
+      }
+
+      "work for non-empty traverse (real)" in real {
+        for {
+          _ <- List(1).parTraverseN_(4)(i => IO.pure(i.toString)).flatMap { r =>
+            IO(r.mustEqual(()))
+          }
+          _ <- List(1, 2).parTraverseN_(3)(i => IO.pure(i.toString)).flatMap { r =>
+            IO(r.mustEqual(()))
+          }
+          _ <- List(1, 2, 3).parTraverseN_(2)(i => IO.pure(i.toString)).flatMap { r =>
+            IO(r.mustEqual(()))
+          }
+          _ <- List(1, 2, 3, 4).parTraverseN_(1)(i => IO.pure(i.toString)).flatMap { r =>
+            IO(r.mustEqual(()))
+          }
+          _ <- (1 to 10000).toList.parTraverseN_(2)(i => IO.pure(i.toString)).flatMap { r =>
+            IO(r.mustEqual(()))
+          }
+        } yield ok
+      }
+
+      "be null-safe" in real {
+        for {
+          r1 <- List[String]("a", "b", null, "d", null).parTraverseN_(2) {
+            case "a" => IO.pure(null)
+            case "b" => IO.pure("x")
+            case "d" => IO.pure(null)
+            case null => IO.pure("z")
+          }
+          _ <- IO { r1 mustEqual (()) } // just trying to make sure we don't crash
+        } yield ok
+      }
+
+      "run finalizers in parallel" in ticked { implicit ticker =>
+        // this test also tests to ensure that we get the errored results rather than cancels
+        // note that the first two effects will have a Canceled outcome, while the third is Errored
+        // if we just go by first wins in sequence, then Canceled is the (incorrect) result
+        // first wins *in time* is the expected semantic here
+        val test = for {
+          latch1 <- IO.deferred[Unit]
+          latch2 <- IO.deferred[Unit]
+
+          _ <- List(1, 2, 3).parTraverseN_(3) {
+            case 1 =>
+              IO.never.onCancel(latch1.complete(()) *> latch2.get)
+
+            case 2 =>
+              IO.never.onCancel(latch2.complete(()) *> latch1.get)
+
+            case 3 =>
+              IO.sleep(10.millis) *> IO.raiseError(new RuntimeException)
+          }
+        } yield ()
+
+        test.attempt.void must completeAs(())
+      }
     }
 
     "parallel" should {

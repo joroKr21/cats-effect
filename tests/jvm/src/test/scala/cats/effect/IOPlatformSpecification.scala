@@ -17,6 +17,7 @@
 package cats.effect
 
 import cats.effect.std.Semaphore
+import cats.effect.syntax.all._
 import cats.effect.unsafe.{
   IORuntime,
   IORuntimeConfig,
@@ -809,6 +810,33 @@ trait IOPlatformSpecification extends DetectPlatform { self: BaseSpec with Scala
         } finally {
           runtime.shutdown()
           schedShut()
+        }
+      }
+
+      "parTraverseN" >> {
+        "short-circuit on error" in real {
+          case object TestException extends RuntimeException
+          val target = 0.until(100000).toList
+          val test = target.parTraverseN(2)(_ => IO.raiseError(TestException))
+
+          test.attempt.as(ok).timeoutTo(500.millis, IO(false must beTrue))
+        }
+
+        "interrupt on errors" in ticked { implicit ticker =>
+          case object TestException extends RuntimeException
+          val test = (0 to 10).toList.parTraverseN(2) { _ => IO.raiseError(TestException) }
+
+          test.attempt.void.parReplicateA_(100000) must completeAs(())
+        }
+      }
+
+      "parTraverseN_" >> {
+        "short-circuit on error" in real {
+          case object TestException extends RuntimeException
+          val target = 0.until(100000).toList
+          val test = target.parTraverseN_(2)(_ => IO.raiseError(TestException))
+
+          test.attempt.as(ok).timeoutTo(500.millis, IO(false must beTrue))
         }
       }
 
