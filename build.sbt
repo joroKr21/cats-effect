@@ -111,12 +111,12 @@ ThisBuild / developers := List(
 
 val PrimaryOS = "ubuntu-latest"
 val ArmOS = "ubuntu-22.04-arm"
-val Windows = "windows-latest"
+val Windows = "windows-2022"
 val MacOS = "macos-14"
 
-val Scala212 = "2.12.21"
+val Scala212 = "2.12.20"
 val Scala213 = "2.13.18"
-val Scala3 = "3.3.7"
+val Scala3 = "3.3.4"
 
 ThisBuild / crossScalaVersions := Seq(Scala3, Scala212, Scala213)
 ThisBuild / githubWorkflowScalaVersions := crossScalaVersions.value
@@ -129,11 +129,6 @@ ThisBuild / tlCiReleaseTags := true
 ThisBuild / tlCiReleaseBranches := Nil
 
 ThisBuild / githubWorkflowArtifactDownloadExtraKeys += "ci"
-ThisBuild / githubWorkflowPublishPreamble +=
-  WorkflowStep.Use(
-    UseRef.Public("typelevel", "await-cirrus", "main"),
-    name = Some("Wait for Cirrus CI")
-  )
 
 val OldGuardJava = JavaSpec.temurin("8")
 val LTSJava = JavaSpec.temurin("11")
@@ -426,6 +421,7 @@ lazy val rootJVM = project
     core.jvm,
     testkit.jvm,
     tests.jvm,
+    ioAppTestsJVM,
     std.jvm,
     example.jvm,
     graalVMExample,
@@ -446,7 +442,8 @@ lazy val kernel = crossProject(JSPlatform, JVMPlatform, NativePlatform)
     name := "cats-effect-kernel",
     libraryDependencies ++= Seq(
       "org.typelevel" %%% "cats-core" % CatsVersion,
-      "org.typelevel" %%% "cats-mtl" % CatsMtlVersion
+      "org.typelevel" %%% "cats-mtl" % CatsMtlVersion,
+      "org.scalameta" %%% "munit" % MUnitVersion % Test
     ),
     mimaBinaryIssueFilters ++= Seq(
       ProblemFilters.exclude[MissingClassProblem]("cats.effect.kernel.Ref$SyncRef"),
@@ -1160,6 +1157,9 @@ lazy val std = crossProject(JSPlatform, JVMPlatform, NativePlatform)
           "cats.effect.std.Dispatcher#RegState#Unstarted.toString"),
         ProblemFilters.exclude[DirectMissingMethodProblem](
           "cats.effect.std.Dispatcher#Registration#Primary.*"),
+        // #4500, private class:
+        ProblemFilters.exclude[ReversedMissingMethodProblem](
+          "cats.effect.std.Supervisor#State.numberOfFibers"),
         // #4065, moved to its own file.
         ProblemFilters.exclude[MissingClassProblem]("cats.effect.std.Mutex$ConcurrentImpl$"),
         ProblemFilters.exclude[DirectMissingMethodProblem](

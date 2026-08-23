@@ -21,11 +21,15 @@ import munit.TestOptions
 
 class IORuntimeBuilderSuite extends BaseSuite with DetectPlatform {
 
-  testUnit(("configure the failure reporter": TestOptions).ignoreNative) {
-    var invoked = false
-    val rt = IORuntime.builder().setFailureReporter(_ => invoked = true).build()
-    rt.compute.reportFailure(new Exception)
-    assert(invoked)
+  testUnit(("configure the failure reporter": TestOptions).pendingNative) {
+    if (isNative) {
+      fail("unsupported on Scala Native")
+    } else {
+      var invoked = false
+      val rt = IORuntime.builder().setFailureReporter(_ => invoked = true).build()
+      rt.compute.reportFailure(new Exception)
+      assert(invoked)
+    }
   }
 
 }

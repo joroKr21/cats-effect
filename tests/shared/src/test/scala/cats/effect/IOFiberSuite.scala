@@ -52,8 +52,13 @@ class IOFiberSuite extends BaseSuite with DetectPlatform {
       } yield ()
     }
   } else {
-    // "toString a running fiber" in skipped("Scala.js exception unmangling is buggy on WSL")
-    // "toString a suspended fiber" in skipped("Scala.js exception unmangling is buggy on WSL")
+    real("toString a running fiber".ignore) {
+      IO.unit // Scala.js exception unmangling is buggy on WSL
+    }
+
+    real("toString a suspended fiber".ignore) {
+      IO.unit // Scala.js exception unmangling is buggy on WSL
+    }
   }
 
   real("toString a completed fiber") {

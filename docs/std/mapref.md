@@ -27,15 +27,12 @@ the pairs can be sharded by key.
 Thus, multiple concurrent updates may be executed independently to each other,
 as long as their keys belong to different shards.
 
-Since `MapRef` is a total map, constructors of `MapRef` either take a default
-value or return a `MapRef[F, K, Option[V]]`.
-
 ### In-Memory database
 
 This is probably one of the most common uses of this datatype.
 
 ```scala mdoc:reset:silent
-//> using lib "org.typelevel::cats-effect:3.7.0"
+//> using lib "org.typelevel::cats-effect:3.6.4"
 
 import cats.effect.IO
 import cats.effect.std.MapRef
@@ -49,7 +46,7 @@ object DatabaseClient {
   def inMemory[Id, Data]: IO[DatabaseClient[IO, Id, Data]] =
     MapRef.ofShardedImmutableMap[IO, Id, Data](
       shardCount = 5 // Arbitrary number of shards just for demonstration.
-    ).map { (mapRef: MapRef[IO, Id, Option[Data]]) =>
+    ).map { mapRef =>
       new DatabaseClient[IO, Id, Data] {
         override def getDataById(id: Id): IO[Option[Data]] =
           mapRef(id).get
