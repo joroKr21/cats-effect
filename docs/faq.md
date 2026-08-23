@@ -29,7 +29,7 @@ cats.effect.IO.println("hello")
 
 ```scala-cli
 //> using scala "2.13.8"
-//> using lib "org.typelevel::cats-effect::3.6.4"
+//> using lib "org.typelevel::cats-effect:3.6.4"
 
 import cats.effect._
 
@@ -277,4 +277,3 @@ Working version of the above example (emitting no warnings):
       .flatMap(_ => IO(input))
   }
 ```
-
