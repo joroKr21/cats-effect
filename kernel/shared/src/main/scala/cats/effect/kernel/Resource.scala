@@ -1005,13 +1005,16 @@ object Resource extends ResourceFOInstances0 with ResourceHOInstances0 with Reso
   def onFinalizeCase[F[_]: Applicative](release: ExitCase => F[Unit]): Resource[F, Unit] =
     unit.onFinalizeCase(release)
 
+  private[this] val cachedLiftK: Id ~> Resource[Id, *] =
+    new (Id ~> Resource[Id, *]) {
+      def apply[A](fa: Id[A]): Resource[Id, A] = Resource.eval(fa)
+    }
+
   /**
    * Lifts an applicative into a resource as a `FunctionK`. The resource has a no-op release.
    */
   def liftK[F[_]]: F ~> Resource[F, *] =
-    new (F ~> Resource[F, *]) {
-      def apply[A](fa: F[A]): Resource[F, A] = Resource.eval(fa)
-    }
+    cachedLiftK.asInstanceOf[F ~> Resource[F, *]]
 
   /**
    * Allocates two resources concurrently, and combines their results in a tuple.

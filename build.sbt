@@ -114,9 +114,14 @@ val ArmOS = "ubuntu-22.04-arm"
 val Windows = "windows-2022"
 val MacOS = "macos-14"
 
-val Scala212 = "2.12.20"
+val ScalaNativeLLVM = "/usr/lib/llvm-15/bin"
+val ArmNativeCI = s"matrix.ci == '${CI.Native.command}' && matrix.os == '$ArmOS'"
+val NonArmNativeCI = s"matrix.ci != '${CI.Native.command}' || matrix.os != '$ArmOS'"
+val ArmNativeEnv = Map("LLVM_BIN" -> ScalaNativeLLVM)
+
+val Scala212 = "2.12.21"
 val Scala213 = "2.13.18"
-val Scala3 = "3.3.4"
+val Scala3 = "3.3.7"
 
 ThisBuild / crossScalaVersions := Seq(Scala3, Scala212, Scala213)
 ThisBuild / githubWorkflowScalaVersions := crossScalaVersions.value
@@ -178,7 +183,15 @@ ThisBuild / githubWorkflowBuild := Seq("JVM", "JS", "Native").map { platform =>
     ) // windows has file lock issues due to shared sources
   )
 } ++ Seq(
-  WorkflowStep.Sbt(List("${{ matrix.ci }}")),
+  WorkflowStep.Sbt(
+    List("${{ matrix.ci }}"),
+    cond = Some(ArmNativeCI),
+    env = ArmNativeEnv
+  ),
+  WorkflowStep.Sbt(
+    List("${{ matrix.ci }}"),
+    cond = Some(NonArmNativeCI)
+  ),
   WorkflowStep.Sbt(
     List("docs/mdoc"),
     cond = Some(
@@ -321,11 +334,11 @@ ThisBuild / autoAPIMappings := true
 ThisBuild / Test / testOptions += Tests.Argument("+l")
 
 val CatsVersion = "2.13.0"
-val CatsMtlVersion = "1.6.0"
+val CatsMtlVersion = "1.7.0"
 val ScalaCheckVersion = "1.19.0"
 val CoopVersion = "1.3.0"
 val MUnitVersion = "1.1.0"
-val MUnitScalaCheckVersion = "1.2.0"
+val MUnitScalaCheckVersion = "1.3.0"
 val DisciplineMUnitVersion = "2.0.0"
 
 val MacrotaskExecutorVersion = "1.1.1"
@@ -454,7 +467,7 @@ lazy val kernel = crossProject(JSPlatform, JVMPlatform, NativePlatform)
     libraryDependencies += "org.scala-js" %%% "scala-js-macrotask-executor" % MacrotaskExecutorVersion % Test
   )
   .nativeSettings(
-    libraryDependencies += "io.github.cquiroz" %%% "scala-java-time" % "2.6.0"
+    libraryDependencies += "io.github.cquiroz" %%% "scala-java-time" % "2.7.0"
   )
 
 /**
@@ -1014,8 +1027,7 @@ lazy val tests: CrossProject = crossProject(JSPlatform, JVMPlatform, NativePlatf
     Compile / scalaJSUseMainModuleInitializer := true,
     Compile / mainClass := Some("catseffect.examples.JSRunner"),
     // The default configured mapSourceURI is used for trace filtering
-    scalacOptions ~= { _.filterNot(_.startsWith("-P:scalajs:mapSourceURI")) },
-    Test / scalaJSLinkerConfig ~= { _.withOptimizer(false) }    // scala-js/scala-js#5331
+    scalacOptions ~= { _.filterNot(_.startsWith("-P:scalajs:mapSourceURI")) }
   )
   .jvmSettings(
     fork := true,
