@@ -111,7 +111,7 @@ ThisBuild / developers := List(
 
 val PrimaryOS = "ubuntu-latest"
 val ArmOS = "ubuntu-22.04-arm"
-val Windows = "windows-latest"
+val Windows = "windows-2022"
 val MacOS = "macos-14"
 
 val ScalaNativeLLVM = "/usr/lib/llvm-15/bin"
@@ -434,6 +434,7 @@ lazy val rootJVM = project
     core.jvm,
     testkit.jvm,
     tests.jvm,
+    ioAppTestsJVM,
     std.jvm,
     example.jvm,
     graalVMExample,
@@ -454,7 +455,8 @@ lazy val kernel = crossProject(JSPlatform, JVMPlatform, NativePlatform)
     name := "cats-effect-kernel",
     libraryDependencies ++= Seq(
       "org.typelevel" %%% "cats-core" % CatsVersion,
-      "org.typelevel" %%% "cats-mtl" % CatsMtlVersion
+      "org.typelevel" %%% "cats-mtl" % CatsMtlVersion,
+      "org.scalameta" %%% "munit" % MUnitVersion % Test
     ),
     mimaBinaryIssueFilters ++= Seq(
       ProblemFilters.exclude[MissingClassProblem]("cats.effect.kernel.Ref$SyncRef"),
@@ -1167,6 +1169,9 @@ lazy val std = crossProject(JSPlatform, JVMPlatform, NativePlatform)
           "cats.effect.std.Dispatcher#RegState#Unstarted.toString"),
         ProblemFilters.exclude[DirectMissingMethodProblem](
           "cats.effect.std.Dispatcher#Registration#Primary.*"),
+        // #4500, private class:
+        ProblemFilters.exclude[ReversedMissingMethodProblem](
+          "cats.effect.std.Supervisor#State.numberOfFibers"),
         // #4065, moved to its own file.
         ProblemFilters.exclude[MissingClassProblem]("cats.effect.std.Mutex$ConcurrentImpl$"),
         ProblemFilters.exclude[DirectMissingMethodProblem](
@@ -1186,7 +1191,24 @@ lazy val std = crossProject(JSPlatform, JVMPlatform, NativePlatform)
         ProblemFilters.exclude[DirectAbstractMethodProblem](
           "cats.effect.std.AtomicCell.evalGetAndUpdate"),
         ProblemFilters.exclude[DirectAbstractMethodProblem](
-          "cats.effect.std.AtomicCell.evalUpdateAndGet")
+          "cats.effect.std.AtomicCell.evalUpdateAndGet"),
+        // introduced by #4648, O(1) cancelation for Semaphore
+        // reworked the waiter-queue bookkeeping of `Semaphore.impl`: `Request` gained a
+        // `requested`/`remaining` split and lost `of`/`n`, and the `Action`/`Wait`/`Done`
+        // ADT was removed. All of these live inside `private class impl` and are never
+        // visible to user code; they only exist as public members at the bytecode level,
+        // so the removals cannot break binary compatibility
+        ProblemFilters.exclude[DirectMissingMethodProblem]("cats.effect.std.Semaphore#impl.*"),
+        ProblemFilters.exclude[DirectMissingMethodProblem](
+          "cats.effect.std.Semaphore#impl#Request.*"),
+        ProblemFilters.exclude[IncompatibleResultTypeProblem](
+          "cats.effect.std.Semaphore#impl#Request.copy$default$2"),
+        ProblemFilters.exclude[IncompatibleResultTypeProblem](
+          "cats.effect.std.Semaphore#impl#Request._2"),
+        ProblemFilters.exclude[MissingTypesProblem]("cats.effect.std.Semaphore$impl$Request$"),
+        ProblemFilters.exclude[MissingClassProblem]("cats.effect.std.Semaphore$impl$Action"),
+        ProblemFilters.exclude[MissingClassProblem]("cats.effect.std.Semaphore$impl$Done$"),
+        ProblemFilters.exclude[MissingClassProblem]("cats.effect.std.Semaphore$impl$Wait$")
       )
   )
   .jsSettings(

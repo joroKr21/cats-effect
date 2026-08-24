@@ -46,7 +46,9 @@ class TraceSuite extends BaseSuite with TestInstances with DetectPlatform { self
       }
     }
   } else {
-//    "have nice traces" in skipped("Scala.js exception unmangling is buggy on WSL")
+    real("have nice traces".ignore) {
+      IO.unit // Scala.js exception unmangling is buggy on WSL
+    }
   }
 
 }

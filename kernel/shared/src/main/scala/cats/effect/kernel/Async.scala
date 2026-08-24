@@ -160,7 +160,7 @@ trait Async[F[_]] extends AsyncPlatform[F] with Sync[F] with Temporal[F] {
     async[A](cb => as(delay(k(cb)), None))
 
   /**
-   * An effect that never terminates.
+   * An effect that never terminates but is cancelable.
    *
    * Polymorphic so it can be used in situations where an arbitrary effect is expected eg
    * [[Fiber.joinWithNever]]

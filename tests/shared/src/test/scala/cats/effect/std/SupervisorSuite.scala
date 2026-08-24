@@ -293,5 +293,34 @@ class SupervisorSuite extends BaseSuite with DetectPlatform {
 
       tsk.parReplicateA_(if (isJVM) 1000 else 1)
     }
+
+    def superviseCancelRace(mkSupervisor: Resource[IO, Supervisor[IO]]) = {
+      val N = if (isJVM) 1000 else 5
+      val M = if (isJVM) 20 else 2
+      val tsk = mkSupervisor.use { supervisor =>
+        supervisor
+          .supervise(IO.unit)
+          .flatMap(_.cancel)
+          .replicateA_(N)
+          .parReplicateA_(M)
+          .flatMap { _ =>
+            // let's wait a bit (for cleanup to happen):
+            IO.sleep(0.2.second) *> {
+              val st = supervisor.asInstanceOf[Supervisor.SupervisorImpl[IO]].state
+              // the supervised fibers must've been cleaned up from the internal state:
+              st.numberOfFibers.flatMap { numFibs => IO(assertEquals(numFibs, 0)) }
+            }
+          }
+      }
+      tsk
+    }
+
+    real(s"$name - supervise / cancel race cleanup") {
+      superviseCancelRace(constructor(false, None))
+    }
+
+    real(s"$name - supervise / cancel race cleanup (with restart)") {
+      superviseCancelRace(constructor(false, Some(_ => true)))
+    }
   }
 }

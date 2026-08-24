@@ -588,7 +588,7 @@ trait QueueTests[Q[_[_], _]] { self: BaseSuite =>
           if (results.nonEmpty)
             expected.await
           else
-            IO.println("did not take any results")
+            IO(assume(false, "did not take any results"))
       } yield ()
 
       test.parReplicateA_(10)
@@ -836,7 +836,7 @@ trait QueueTests[Q[_[_], _]] { self: BaseSuite =>
       def loop(i: Int): IO[Unit] = {
         // we try iterating a few times to get canceled in the middle
         if (i > Bound) {
-          IO.println(s"attempted $i times and could not reproduce scenario")
+          IO(assume(false, s"attempted $i times and could not reproduce scenario"))
         } else {
           test flatMap {
             case true => loop(i + 1)
